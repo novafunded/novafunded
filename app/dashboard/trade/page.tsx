@@ -8,6 +8,7 @@ type OrderSide = "buy" | "sell"
 type OrderType = "market" | "limit"
 type TradeStatus = "pending" | "open" | "closed" | "cancelled"
 type CloseReason = "tp" | "sl" | "manual" | "breach"
+type DragTarget = "entry" | "tp" | "sl" | null
 
 type Trade = {
   id: string
@@ -29,7 +30,11 @@ type Trade = {
   closeReason?: CloseReason
 }
 
-type DragTarget = "entry" | "tp" | "sl" | null
+type LevelLocks = {
+  entry: boolean
+  tp: boolean
+  sl: boolean
+}
 
 const SYMBOLS: Record<
   string,
@@ -126,8 +131,8 @@ function priceToPercent(price: number, low: number, high: number) {
 
 function percentToPrice(percent: number, low: number, high: number, step: number) {
   const safePercent = clamp(percent, 8, 92)
-  const price = high - (safePercent / 100) * (high - low)
-  return roundToStep(price, step)
+  const raw = high - (safePercent / 100) * (high - low)
+  return roundToStep(raw, step)
 }
 
 function computePnl(trade: Trade, price: number) {
@@ -136,47 +141,75 @@ function computePnl(trade: Trade, price: number) {
   return Number((diff * trade.size).toFixed(2))
 }
 
-function normalizeLevels(
+function getMinGap(step: number) {
+  return step * (step >= 1 ? 5 : 10)
+}
+
+function buildDefaultLevels(
   side: OrderSide,
-  orderType: OrderType,
-  livePrice: number,
-  entry: number,
-  stopLoss: number | null,
-  takeProfit: number | null,
-  step: number,
-  useStopLoss: boolean,
-  useTakeProfit: boolean
+  base: number,
+  risk: number,
+  reward: number,
+  step: number
 ) {
-  const minGap = step * (step >= 1 ? 5 : 10)
-
-  let nextEntry = roundToStep(entry, step)
-  let nextStop = stopLoss !== null ? roundToStep(stopLoss, step) : null
-  let nextTake = takeProfit !== null ? roundToStep(takeProfit, step) : null
-
-  if (orderType === "market") {
-    nextEntry = roundToStep(livePrice, step)
-  }
+  const rawEntry = roundToStep(base, step)
 
   if (side === "buy") {
-    if (useStopLoss) {
-      nextStop = Math.min(nextStop ?? nextEntry - minGap, nextEntry - minGap)
-    }
-    if (useTakeProfit) {
-      nextTake = Math.max(nextTake ?? nextEntry + minGap, nextEntry + minGap)
-    }
-  } else {
-    if (useStopLoss) {
-      nextStop = Math.max(nextStop ?? nextEntry + minGap, nextEntry + minGap)
-    }
-    if (useTakeProfit) {
-      nextTake = Math.min(nextTake ?? nextEntry - minGap, nextEntry - minGap)
+    return {
+      entry: rawEntry,
+      stopLoss: roundToStep(rawEntry - risk, step),
+      takeProfit: roundToStep(rawEntry + reward, step),
     }
   }
 
   return {
-    entry: roundToStep(nextEntry, step),
-    stopLoss: useStopLoss ? roundToStep(nextStop ?? nextEntry, step) : null,
-    takeProfit: useTakeProfit ? roundToStep(nextTake ?? nextEntry, step) : null,
+    entry: rawEntry,
+    stopLoss: roundToStep(rawEntry + risk, step),
+    takeProfit: roundToStep(rawEntry - reward, step),
+  }
+}
+
+function normalizeDraftLevels(params: {
+  side: OrderSide
+  orderType: OrderType
+  livePrice: number
+  entry: number
+  stopLoss: number | null
+  takeProfit: number | null
+  step: number
+  useStopLoss: boolean
+  useTakeProfit: boolean
+}) {
+  const {
+    side,
+    orderType,
+    livePrice,
+    entry,
+    stopLoss,
+    takeProfit,
+    step,
+    useStopLoss,
+    useTakeProfit,
+  } = params
+
+  const minGap = getMinGap(step)
+  const effectiveEntry = orderType === "market" ? roundToStep(livePrice, step) : roundToStep(entry, step)
+
+  let nextStop = useStopLoss ? roundToStep(stopLoss ?? effectiveEntry, step) : null
+  let nextTake = useTakeProfit ? roundToStep(takeProfit ?? effectiveEntry, step) : null
+
+  if (side === "buy") {
+    if (nextStop !== null) nextStop = Math.min(nextStop, effectiveEntry - minGap)
+    if (nextTake !== null) nextTake = Math.max(nextTake, effectiveEntry + minGap)
+  } else {
+    if (nextStop !== null) nextStop = Math.max(nextStop, effectiveEntry + minGap)
+    if (nextTake !== null) nextTake = Math.min(nextTake, effectiveEntry - minGap)
+  }
+
+  return {
+    entry: effectiveEntry,
+    stopLoss: nextStop,
+    takeProfit: nextTake,
   }
 }
 
@@ -186,26 +219,28 @@ export default function TradePage() {
   const [orderType, setOrderType] = useState<OrderType>("market")
   const [size, setSize] = useState(10)
 
+  const symbolMeta = SYMBOLS[symbol]
+
   const [livePrice, setLivePrice] = useState(SYMBOLS.BTCUSD.startPrice)
 
   const [entry, setEntry] = useState(SYMBOLS.BTCUSD.startPrice)
-  const [confirmedEntry, setConfirmedEntry] = useState<number | null>(null)
-
   const [stopLoss, setStopLoss] = useState<number | null>(SYMBOLS.BTCUSD.startPrice - 400)
-  const [confirmedStopLoss, setConfirmedStopLoss] = useState<number | null>(SYMBOLS.BTCUSD.startPrice - 400)
-
   const [takeProfit, setTakeProfit] = useState<number | null>(SYMBOLS.BTCUSD.startPrice + 1200)
-  const [confirmedTakeProfit, setConfirmedTakeProfit] = useState<number | null>(SYMBOLS.BTCUSD.startPrice + 1200)
 
   const [useStopLoss, setUseStopLoss] = useState(true)
   const [useTakeProfit, setUseTakeProfit] = useState(true)
 
+  const [levelLocks, setLevelLocks] = useState<LevelLocks>({
+    entry: false,
+    tp: false,
+    sl: false,
+  })
+
   const [trades, setTrades] = useState<Trade[]>([])
   const [dragTarget, setDragTarget] = useState<DragTarget>(null)
-  const [chartMounted, setChartMounted] = useState(false)
+  const [isHydrated, setIsHydrated] = useState(false)
 
   const chartRef = useRef<HTMLDivElement | null>(null)
-  const symbolMeta = SYMBOLS[symbol]
 
   const balance = useMemo(() => {
     const closedPnl = trades
@@ -241,14 +276,15 @@ export default function TradePage() {
     return new Set(opened).size
   }, [trades])
 
-  const overlayRange = useMemo(() => {
-    const values: number[] = [livePrice, entry]
+  const previewEntry = orderType === "market" ? roundToStep(livePrice, symbolMeta.minMove) : entry
+  const effectiveStopLoss = useStopLoss ? stopLoss : null
+  const effectiveTakeProfit = useTakeProfit ? takeProfit : null
 
-    if (stopLoss !== null) values.push(stopLoss)
-    if (takeProfit !== null) values.push(takeProfit)
-    if (confirmedEntry !== null) values.push(confirmedEntry)
-    if (confirmedStopLoss !== null) values.push(confirmedStopLoss)
-    if (confirmedTakeProfit !== null) values.push(confirmedTakeProfit)
+  const overlayRange = useMemo(() => {
+    const values: number[] = [livePrice, previewEntry]
+
+    if (effectiveStopLoss !== null) values.push(effectiveStopLoss)
+    if (effectiveTakeProfit !== null) values.push(effectiveTakeProfit)
 
     for (const trade of trades) {
       values.push(trade.requestedEntry)
@@ -259,17 +295,7 @@ export default function TradePage() {
     }
 
     return getChartRange(values, symbol)
-  }, [
-    confirmedEntry,
-    confirmedStopLoss,
-    confirmedTakeProfit,
-    entry,
-    livePrice,
-    stopLoss,
-    symbol,
-    takeProfit,
-    trades,
-  ])
+  }, [effectiveStopLoss, effectiveTakeProfit, livePrice, previewEntry, symbol, trades])
 
   const syncedAccount = useMemo(() => {
     return {
@@ -282,14 +308,63 @@ export default function TradePage() {
     }
   }, [balance, closedTrades.length, equity, isBreached, isPassed, tradingDays])
 
+  function resetSetup(next?: Partial<{
+    nextSymbol: keyof typeof SYMBOLS
+    nextSide: OrderSide
+    nextOrderType: OrderType
+    keepLivePrice: boolean
+  }>) {
+    const selectedSymbol = next?.nextSymbol ?? symbol
+    const selectedSide = next?.nextSide ?? side
+    const selectedOrderType = next?.nextOrderType ?? orderType
+    const meta = SYMBOLS[selectedSymbol]
+    const base = meta.startPrice
+
+    const defaults = buildDefaultLevels(
+      selectedSide,
+      base,
+      meta.defaultRisk,
+      meta.defaultReward,
+      meta.minMove
+    )
+
+    const normalized = normalizeDraftLevels({
+      side: selectedSide,
+      orderType: selectedOrderType,
+      livePrice: base,
+      entry: defaults.entry,
+      stopLoss: defaults.stopLoss,
+      takeProfit: defaults.takeProfit,
+      step: meta.minMove,
+      useStopLoss,
+      useTakeProfit,
+    })
+
+    if (!next?.keepLivePrice) {
+      setLivePrice(base)
+    }
+
+    setEntry(normalized.entry)
+    setStopLoss(normalized.stopLoss)
+    setTakeProfit(normalized.takeProfit)
+    setLevelLocks({
+      entry: selectedOrderType === "market",
+      tp: false,
+      sl: false,
+    })
+    setDragTarget(null)
+  }
+
   useEffect(() => {
     const savedTrades = window.localStorage.getItem("novafunded-trades")
-    const savedState = window.localStorage.getItem("novafunded-trade-page-state")
+    const savedState = window.localStorage.getItem("novafunded-trade-page-state-v2")
 
     if (savedTrades) {
       try {
         setTrades(JSON.parse(savedTrades) as Trade[])
-      } catch {}
+      } catch {
+        // ignore bad local data
+      }
     }
 
     if (savedState) {
@@ -300,84 +375,110 @@ export default function TradePage() {
           orderType: OrderType
           size: number
           entry: number
-          confirmedEntry: number | null
           stopLoss: number | null
-          confirmedStopLoss: number | null
           takeProfit: number | null
-          confirmedTakeProfit: number | null
           useStopLoss: boolean
           useTakeProfit: boolean
           livePrice: number
+          levelLocks: LevelLocks
         }>
 
-        if (parsed.symbol && SYMBOLS[parsed.symbol]) setSymbol(parsed.symbol)
-        if (parsed.side) setSide(parsed.side)
-        if (parsed.orderType) setOrderType(parsed.orderType)
+        const nextSymbol = parsed.symbol && SYMBOLS[parsed.symbol] ? parsed.symbol : "BTCUSD"
+        const nextSide = parsed.side ?? "buy"
+        const nextOrderType = parsed.orderType ?? "market"
+
+        setSymbol(nextSymbol)
+        setSide(nextSide)
+        setOrderType(nextOrderType)
+
         if (typeof parsed.size === "number") setSize(parsed.size)
-        if (typeof parsed.entry === "number") setEntry(parsed.entry)
-        if (parsed.confirmedEntry === null || typeof parsed.confirmedEntry === "number") {
-          setConfirmedEntry(parsed.confirmedEntry ?? null)
-        }
-        if (parsed.stopLoss === null || typeof parsed.stopLoss === "number") setStopLoss(parsed.stopLoss ?? null)
-        if (parsed.confirmedStopLoss === null || typeof parsed.confirmedStopLoss === "number") {
-          setConfirmedStopLoss(parsed.confirmedStopLoss ?? null)
-        }
-        if (parsed.takeProfit === null || typeof parsed.takeProfit === "number") {
-          setTakeProfit(parsed.takeProfit ?? null)
-        }
-        if (parsed.confirmedTakeProfit === null || typeof parsed.confirmedTakeProfit === "number") {
-          setConfirmedTakeProfit(parsed.confirmedTakeProfit ?? null)
-        }
         if (typeof parsed.useStopLoss === "boolean") setUseStopLoss(parsed.useStopLoss)
         if (typeof parsed.useTakeProfit === "boolean") setUseTakeProfit(parsed.useTakeProfit)
         if (typeof parsed.livePrice === "number") setLivePrice(parsed.livePrice)
-      } catch {}
+
+        const baseDefaults = buildDefaultLevels(
+          nextSide,
+          SYMBOLS[nextSymbol].startPrice,
+          SYMBOLS[nextSymbol].defaultRisk,
+          SYMBOLS[nextSymbol].defaultReward,
+          SYMBOLS[nextSymbol].minMove
+        )
+
+        setEntry(typeof parsed.entry === "number" ? parsed.entry : baseDefaults.entry)
+        setStopLoss(
+          parsed.stopLoss === null || typeof parsed.stopLoss === "number"
+            ? parsed.stopLoss
+            : baseDefaults.stopLoss
+        )
+        setTakeProfit(
+          parsed.takeProfit === null || typeof parsed.takeProfit === "number"
+            ? parsed.takeProfit
+            : baseDefaults.takeProfit
+        )
+
+        setLevelLocks(
+          parsed.levelLocks ?? {
+            entry: nextOrderType === "market",
+            tp: false,
+            sl: false,
+          }
+        )
+      } catch {
+        resetSetup({
+          nextSymbol: "BTCUSD",
+          nextSide: "buy",
+          nextOrderType: "market",
+        })
+      }
+    } else {
+      resetSetup({
+        nextSymbol: "BTCUSD",
+        nextSide: "buy",
+        nextOrderType: "market",
+      })
     }
 
-    setChartMounted(true)
+    setIsHydrated(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (!chartMounted) return
+    if (!isHydrated) return
     window.localStorage.setItem("novafunded-trades", JSON.stringify(trades))
-  }, [chartMounted, trades])
+  }, [isHydrated, trades])
 
   useEffect(() => {
-    if (!chartMounted) return
+    if (!isHydrated) return
 
     window.localStorage.setItem(
-      "novafunded-trade-page-state",
+      "novafunded-trade-page-state-v2",
       JSON.stringify({
         symbol,
         side,
         orderType,
         size,
         entry,
-        confirmedEntry,
         stopLoss,
-        confirmedStopLoss,
         takeProfit,
-        confirmedTakeProfit,
         useStopLoss,
         useTakeProfit,
         livePrice,
+        levelLocks,
       })
     )
   }, [
-    chartMounted,
-    confirmedEntry,
-    confirmedStopLoss,
-    confirmedTakeProfit,
-    entry,
-    livePrice,
-    orderType,
-    side,
-    size,
-    stopLoss,
+    isHydrated,
     symbol,
+    side,
+    orderType,
+    size,
+    entry,
+    stopLoss,
     takeProfit,
     useStopLoss,
     useTakeProfit,
+    livePrice,
+    levelLocks,
   ])
 
   useEffect(() => {
@@ -410,12 +511,12 @@ export default function TradePage() {
 
       const next = prev.map((trade) => {
         if (trade.status === "pending") {
-          const fill =
+          const shouldFill =
             trade.side === "buy"
               ? livePrice <= trade.requestedEntry
               : livePrice >= trade.requestedEntry
 
-          if (!fill) return trade
+          if (!shouldFill) return trade
 
           changed = true
           return {
@@ -497,115 +598,176 @@ export default function TradePage() {
   }, [isBreached, livePrice])
 
   useEffect(() => {
-    const base = symbolMeta.startPrice
-    const step = symbolMeta.minMove
-
-    setLivePrice(base)
-
-    const defaults =
-      side === "buy"
-        ? {
-            entry: base,
-            stopLoss: base - symbolMeta.defaultRisk,
-            takeProfit: base + symbolMeta.defaultReward,
-          }
-        : {
-            entry: base,
-            stopLoss: base + symbolMeta.defaultRisk,
-            takeProfit: base - symbolMeta.defaultReward,
-          }
-
-    const normalized = normalizeLevels(
-      side,
-      orderType,
-      base,
-      defaults.entry,
-      defaults.stopLoss,
-      defaults.takeProfit,
-      step,
-      useStopLoss,
-      useTakeProfit
-    )
-
-    setEntry(normalized.entry)
-    setConfirmedEntry(orderType === "limit" ? normalized.entry : null)
-    setStopLoss(normalized.stopLoss)
-    setConfirmedStopLoss(useStopLoss ? normalized.stopLoss : null)
-    setTakeProfit(normalized.takeProfit)
-    setConfirmedTakeProfit(useTakeProfit ? normalized.takeProfit : null)
-  }, [
-    orderType,
-    side,
-    symbol,
-    symbolMeta.defaultReward,
-    symbolMeta.defaultRisk,
-    symbolMeta.minMove,
-    symbolMeta.startPrice,
-    useStopLoss,
-    useTakeProfit,
-  ])
-
-  useEffect(() => {
     if (!useStopLoss) {
-      setConfirmedStopLoss(null)
-    } else if (stopLoss !== null && confirmedStopLoss === null) {
-      setConfirmedStopLoss(stopLoss)
+      setStopLoss(null)
+      setLevelLocks((prev) => ({ ...prev, sl: true }))
+    } else {
+      if (stopLoss === null) {
+        const defaults = buildDefaultLevels(
+          side,
+          orderType === "market" ? livePrice : entry,
+          symbolMeta.defaultRisk,
+          symbolMeta.defaultReward,
+          symbolMeta.minMove
+        )
+        setStopLoss(defaults.stopLoss)
+      }
+      setLevelLocks((prev) => ({ ...prev, sl: false }))
     }
-  }, [confirmedStopLoss, stopLoss, useStopLoss])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useStopLoss])
 
   useEffect(() => {
     if (!useTakeProfit) {
-      setConfirmedTakeProfit(null)
-    } else if (takeProfit !== null && confirmedTakeProfit === null) {
-      setConfirmedTakeProfit(takeProfit)
+      setTakeProfit(null)
+      setLevelLocks((prev) => ({ ...prev, tp: true }))
+    } else {
+      if (takeProfit === null) {
+        const defaults = buildDefaultLevels(
+          side,
+          orderType === "market" ? livePrice : entry,
+          symbolMeta.defaultRisk,
+          symbolMeta.defaultReward,
+          symbolMeta.minMove
+        )
+        setTakeProfit(defaults.takeProfit)
+      }
+      setLevelLocks((prev) => ({ ...prev, tp: false }))
     }
-  }, [confirmedTakeProfit, takeProfit, useTakeProfit])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useTakeProfit])
+
+  function handleSymbolChange(nextSymbol: keyof typeof SYMBOLS) {
+    setSymbol(nextSymbol)
+    resetSetup({
+      nextSymbol,
+      nextSide: side,
+      nextOrderType: orderType,
+    })
+  }
+
+  function handleSideChange(nextSide: OrderSide) {
+    setSide(nextSide)
+    resetSetup({
+      nextSymbol: symbol,
+      nextSide,
+      nextOrderType: orderType,
+    })
+  }
+
+  function handleOrderTypeChange(nextOrderType: OrderType) {
+    setOrderType(nextOrderType)
+    resetSetup({
+      nextSymbol: symbol,
+      nextSide: side,
+      nextOrderType,
+      keepLivePrice: nextOrderType === "market",
+    })
+  }
+
+  function lockEntry() {
+    if (orderType !== "limit") return
+
+    const normalized = normalizeDraftLevels({
+      side,
+      orderType,
+      livePrice,
+      entry,
+      stopLoss,
+      takeProfit,
+      step: symbolMeta.minMove,
+      useStopLoss,
+      useTakeProfit,
+    })
+
+    setEntry(normalized.entry)
+    if (useStopLoss) setStopLoss(normalized.stopLoss)
+    if (useTakeProfit) setTakeProfit(normalized.takeProfit)
+    setLevelLocks((prev) => ({ ...prev, entry: true }))
+  }
+
+  function lockTp() {
+    if (!useTakeProfit || takeProfit === null) return
+
+    const normalized = normalizeDraftLevels({
+      side,
+      orderType,
+      livePrice,
+      entry,
+      stopLoss,
+      takeProfit,
+      step: symbolMeta.minMove,
+      useStopLoss,
+      useTakeProfit,
+    })
+
+    setEntry(normalized.entry)
+    setTakeProfit(normalized.takeProfit)
+    if (useStopLoss) setStopLoss(normalized.stopLoss)
+    setLevelLocks((prev) => ({ ...prev, tp: true }))
+  }
+
+  function lockSl() {
+    if (!useStopLoss || stopLoss === null) return
+
+    const normalized = normalizeDraftLevels({
+      side,
+      orderType,
+      livePrice,
+      entry,
+      stopLoss,
+      takeProfit,
+      step: symbolMeta.minMove,
+      useStopLoss,
+      useTakeProfit,
+    })
+
+    setEntry(normalized.entry)
+    setStopLoss(normalized.stopLoss)
+    if (useTakeProfit) setTakeProfit(normalized.takeProfit)
+    setLevelLocks((prev) => ({ ...prev, sl: true }))
+  }
+
+  function unlockAllLevels() {
+    setLevelLocks({
+      entry: orderType === "market",
+      tp: !useTakeProfit,
+      sl: !useStopLoss,
+    })
+  }
 
   function placeTrade() {
     if (isBreached) return
 
-    const step = symbolMeta.minMove
+    if (orderType === "limit") {
+      const needsEntry = !levelLocks.entry
+      const needsTp = useTakeProfit && !levelLocks.tp
+      const needsSl = useStopLoss && !levelLocks.sl
 
-    const entryToUse =
-      orderType === "market"
-        ? livePrice
-        : confirmedEntry ?? entry
+      if (needsEntry || needsTp || needsSl) return
+    }
 
-    const stopToUse =
-      useStopLoss
-        ? confirmedStopLoss ?? stopLoss
-        : null
-
-    const takeToUse =
-      useTakeProfit
-        ? confirmedTakeProfit ?? takeProfit
-        : null
-
-    const normalized = normalizeLevels(
+    const normalized = normalizeDraftLevels({
       side,
       orderType,
       livePrice,
-      entryToUse,
-      stopToUse,
-      takeToUse,
-      step,
+      entry,
+      stopLoss,
+      takeProfit,
+      step: symbolMeta.minMove,
       useStopLoss,
-      useTakeProfit
-    )
+      useTakeProfit,
+    })
 
-    if (orderType === "limit") {
-      setConfirmedEntry(normalized.entry)
-    }
-    setConfirmedStopLoss(normalized.stopLoss)
-    setConfirmedTakeProfit(normalized.takeProfit)
+    const requestedEntry = orderType === "market" ? roundToStep(livePrice, symbolMeta.minMove) : normalized.entry
 
     const trade: Trade = {
       id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       symbol,
       side,
       orderType,
-      requestedEntry: orderType === "market" ? livePrice : normalized.entry,
-      entry: orderType === "market" ? livePrice : null,
+      requestedEntry,
+      entry: orderType === "market" ? requestedEntry : null,
       useStopLoss,
       useTakeProfit,
       stopLoss: normalized.stopLoss,
@@ -619,6 +781,13 @@ export default function TradePage() {
     }
 
     setTrades((prev) => [trade, ...prev])
+
+    resetSetup({
+      nextSymbol: symbol,
+      nextSide: side,
+      nextOrderType: orderType,
+      keepLivePrice: true,
+    })
   }
 
   function closeTradeManually(id: string) {
@@ -649,39 +818,11 @@ export default function TradePage() {
 
   function resetChallengeLocally() {
     setTrades([])
-    setLivePrice(symbolMeta.startPrice)
-
-    const defaults =
-      side === "buy"
-        ? {
-            entry: symbolMeta.startPrice,
-            stopLoss: symbolMeta.startPrice - symbolMeta.defaultRisk,
-            takeProfit: symbolMeta.startPrice + symbolMeta.defaultReward,
-          }
-        : {
-            entry: symbolMeta.startPrice,
-            stopLoss: symbolMeta.startPrice + symbolMeta.defaultRisk,
-            takeProfit: symbolMeta.startPrice - symbolMeta.defaultReward,
-          }
-
-    const normalized = normalizeLevels(
-      side,
-      orderType,
-      symbolMeta.startPrice,
-      defaults.entry,
-      defaults.stopLoss,
-      defaults.takeProfit,
-      symbolMeta.minMove,
-      useStopLoss,
-      useTakeProfit
-    )
-
-    setEntry(normalized.entry)
-    setConfirmedEntry(orderType === "limit" ? normalized.entry : null)
-    setStopLoss(normalized.stopLoss)
-    setConfirmedStopLoss(useStopLoss ? normalized.stopLoss : null)
-    setTakeProfit(normalized.takeProfit)
-    setConfirmedTakeProfit(useTakeProfit ? normalized.takeProfit : null)
+    resetSetup({
+      nextSymbol: symbol,
+      nextSide: side,
+      nextOrderType: orderType,
+    })
   }
 
   function updateDraggedLevel(clientY: number, target: Exclude<DragTarget, null>) {
@@ -689,20 +830,15 @@ export default function TradePage() {
 
     const rect = chartRef.current.getBoundingClientRect()
     const percent = ((clientY - rect.top) / rect.height) * 100
-    const nextPrice = percentToPrice(
-      percent,
-      overlayRange.low,
-      overlayRange.high,
-      symbolMeta.minMove
-    )
+    const rawPrice = percentToPrice(percent, overlayRange.low, overlayRange.high, symbolMeta.minMove)
+    const minGap = getMinGap(symbolMeta.minMove)
 
-    const minGap = symbolMeta.minMove * (symbolMeta.minMove >= 1 ? 5 : 10)
-    const referenceEntry = orderType === "market" ? livePrice : entry
+    const currentEntry = orderType === "market" ? roundToStep(livePrice, symbolMeta.minMove) : entry
 
     if (target === "entry") {
-      if (orderType !== "limit") return
+      if (orderType !== "limit" || levelLocks.entry) return
 
-      let nextEntry = nextPrice
+      let nextEntry = rawPrice
 
       if (side === "buy") {
         if (useStopLoss && stopLoss !== null) nextEntry = Math.max(nextEntry, stopLoss + minGap)
@@ -717,27 +853,27 @@ export default function TradePage() {
     }
 
     if (target === "tp") {
-      if (!useTakeProfit) return
+      if (!useTakeProfit || takeProfit === null || levelLocks.tp) return
 
       if (side === "buy") {
-        const minTp = referenceEntry + minGap
-        setTakeProfit(roundToStep(Math.max(nextPrice, minTp), symbolMeta.minMove))
+        const minTp = currentEntry + minGap
+        setTakeProfit(roundToStep(Math.max(rawPrice, minTp), symbolMeta.minMove))
       } else {
-        const maxTp = referenceEntry - minGap
-        setTakeProfit(roundToStep(Math.min(nextPrice, maxTp), symbolMeta.minMove))
+        const maxTp = currentEntry - minGap
+        setTakeProfit(roundToStep(Math.min(rawPrice, maxTp), symbolMeta.minMove))
       }
       return
     }
 
     if (target === "sl") {
-      if (!useStopLoss) return
+      if (!useStopLoss || stopLoss === null || levelLocks.sl) return
 
       if (side === "buy") {
-        const maxSl = referenceEntry - minGap
-        setStopLoss(roundToStep(Math.min(nextPrice, maxSl), symbolMeta.minMove))
+        const maxSl = currentEntry - minGap
+        setStopLoss(roundToStep(Math.min(rawPrice, maxSl), symbolMeta.minMove))
       } else {
-        const minSl = referenceEntry + minGap
-        setStopLoss(roundToStep(Math.max(nextPrice, minSl), symbolMeta.minMove))
+        const minSl = currentEntry + minGap
+        setStopLoss(roundToStep(Math.max(rawPrice, minSl), symbolMeta.minMove))
       }
     }
   }
@@ -764,47 +900,37 @@ export default function TradePage() {
     }
   }, [
     dragTarget,
+    overlayRange.low,
+    overlayRange.high,
+    symbolMeta.minMove,
     entry,
+    stopLoss,
+    takeProfit,
     livePrice,
     orderType,
-    overlayRange.high,
-    overlayRange.low,
     side,
-    stopLoss,
-    symbolMeta.minMove,
-    takeProfit,
+    levelLocks,
     useStopLoss,
     useTakeProfit,
   ])
-
-  const previewEntry = orderType === "market" ? livePrice : entry
-  const effectiveStopLoss = useStopLoss ? stopLoss : null
-  const effectiveTakeProfit = useTakeProfit ? takeProfit : null
 
   const targetProgress = clamp((Math.max(balance - START_BALANCE, 0) / PROFIT_TARGET) * 100, 0, 100)
 
   const labelY = {
     entry: priceToPercent(previewEntry, overlayRange.low, overlayRange.high),
     sl:
-      useStopLoss && stopLoss !== null
-        ? priceToPercent(stopLoss, overlayRange.low, overlayRange.high)
+      effectiveStopLoss !== null
+        ? priceToPercent(effectiveStopLoss, overlayRange.low, overlayRange.high)
         : null,
     tp:
-      useTakeProfit && takeProfit !== null
-        ? priceToPercent(takeProfit, overlayRange.low, overlayRange.high)
+      effectiveTakeProfit !== null
+        ? priceToPercent(effectiveTakeProfit, overlayRange.low, overlayRange.high)
         : null,
   }
 
-  const entryConfirmed =
-    orderType === "market" || confirmedEntry === entry
-
-  const tpConfirmed =
-    !useTakeProfit ||
-    (takeProfit !== null && confirmedTakeProfit === takeProfit)
-
-  const slConfirmed =
-    !useStopLoss ||
-    (stopLoss !== null && confirmedStopLoss === stopLoss)
+  const limitReady =
+    orderType === "market" ||
+    (levelLocks.entry && (!useTakeProfit || levelLocks.tp) && (!useStopLoss || levelLocks.sl))
 
   return (
     <div className="space-y-6">
@@ -817,7 +943,7 @@ export default function TradePage() {
               </p>
               <h1 className="mt-2 text-3xl font-semibold text-white">Trade Terminal</h1>
               <p className="mt-2 text-sm text-white/50">
-                Simulated execution with draggable overlay levels and challenge rules.
+                Clean draggable workflow with locked levels and stable limit order behavior.
               </p>
             </div>
 
@@ -825,7 +951,7 @@ export default function TradePage() {
               {Object.entries(SYMBOLS).map(([key]) => (
                 <button
                   key={key}
-                  onClick={() => setSymbol(key as keyof typeof SYMBOLS)}
+                  onClick={() => handleSymbolChange(key as keyof typeof SYMBOLS)}
                   className={`rounded-2xl border px-4 py-2 text-sm transition ${
                     symbol === key
                       ? "border-cyan-400/30 bg-cyan-400/15 text-cyan-300"
@@ -853,6 +979,8 @@ export default function TradePage() {
               entry={previewEntry}
               stopLoss={effectiveStopLoss}
               takeProfit={effectiveTakeProfit}
+              chartLow={overlayRange.low}
+              chartHigh={overlayRange.high}
               size={size}
             />
 
@@ -863,14 +991,14 @@ export default function TradePage() {
               >
                 <button
                   onMouseDown={() => {
-                    if (orderType === "limit") setDragTarget("entry")
+                    if (orderType === "limit" && !levelLocks.entry) setDragTarget("entry")
                   }}
                   className={`rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
-                    orderType === "limit"
-                      ? entryConfirmed
+                    orderType === "market"
+                      ? "border border-cyan-400/25 bg-cyan-500/10 text-cyan-300/80"
+                      : levelLocks.entry
                         ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-300"
                         : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
-                      : "border border-cyan-400/25 bg-cyan-500/10 text-cyan-300/80"
                   }`}
                 >
                   Entry {formatPrice(previewEntry, symbol)}
@@ -883,9 +1011,11 @@ export default function TradePage() {
                   style={{ top: `${labelY.tp}%` }}
                 >
                   <button
-                    onMouseDown={() => setDragTarget("tp")}
+                    onMouseDown={() => {
+                      if (!levelLocks.tp) setDragTarget("tp")
+                    }}
                     className={`rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
-                      tpConfirmed
+                      levelLocks.tp
                         ? "border border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
                         : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
                     }`}
@@ -901,9 +1031,11 @@ export default function TradePage() {
                   style={{ top: `${labelY.sl}%` }}
                 >
                   <button
-                    onMouseDown={() => setDragTarget("sl")}
+                    onMouseDown={() => {
+                      if (!levelLocks.sl) setDragTarget("sl")
+                    }}
                     className={`rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
-                      slConfirmed
+                      levelLocks.sl
                         ? "border border-red-400/40 bg-red-500/15 text-red-300"
                         : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
                     }`}
@@ -991,7 +1123,7 @@ export default function TradePage() {
 
             <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => setSide("buy")}
+                onClick={() => handleSideChange("buy")}
                 className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
                   side === "buy"
                     ? "bg-emerald-500 text-black"
@@ -1001,7 +1133,7 @@ export default function TradePage() {
                 Buy
               </button>
               <button
-                onClick={() => setSide("sell")}
+                onClick={() => handleSideChange("sell")}
                 className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
                   side === "sell"
                     ? "bg-red-500 text-white"
@@ -1014,7 +1146,7 @@ export default function TradePage() {
 
             <div className="mt-3 grid grid-cols-2 gap-3">
               <button
-                onClick={() => setOrderType("market")}
+                onClick={() => handleOrderTypeChange("market")}
                 className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
                   orderType === "market"
                     ? "border border-cyan-400/30 bg-cyan-400/15 text-cyan-300"
@@ -1024,7 +1156,7 @@ export default function TradePage() {
                 Market
               </button>
               <button
-                onClick={() => setOrderType("limit")}
+                onClick={() => handleOrderTypeChange("limit")}
                 className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
                   orderType === "limit"
                     ? "border border-cyan-400/30 bg-cyan-400/15 text-cyan-300"
@@ -1087,20 +1219,21 @@ export default function TradePage() {
                         {formatPrice(previewEntry, symbol)}
                       </p>
                       <p className="mt-1 text-[11px] text-white/35">
-                        {orderType === "market" ? "Tracks live price" : "Drag Entry label on chart"}
+                        {orderType === "market" ? "Tracks live price" : levelLocks.entry ? "Locked" : "Drag on chart, then lock"}
                       </p>
                     </div>
 
                     {orderType === "limit" ? (
                       <button
-                        onClick={() => setConfirmedEntry(entry)}
+                        onClick={lockEntry}
+                        disabled={levelLocks.entry}
                         className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
-                          entryConfirmed
-                            ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                          levelLocks.entry
+                            ? "cursor-not-allowed border border-cyan-400/30 bg-cyan-500/10 text-cyan-300"
                             : "border border-cyan-400/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/15"
                         }`}
                       >
-                        {entryConfirmed ? "Set" : "Set Entry"}
+                        {levelLocks.entry ? "Locked" : "Lock Entry"}
                       </button>
                     ) : null}
                   </div>
@@ -1123,19 +1256,22 @@ export default function TradePage() {
                           ? formatPrice(takeProfit, symbol)
                           : "Disabled"}
                       </p>
-                      <p className="mt-1 text-[11px] text-white/35">Drag TP label on chart</p>
+                      <p className="mt-1 text-[11px] text-white/35">
+                        {!useTakeProfit ? "Disabled" : levelLocks.tp ? "Locked" : "Drag on chart, then lock"}
+                      </p>
                     </div>
 
                     {useTakeProfit && takeProfit !== null ? (
                       <button
-                        onClick={() => setConfirmedTakeProfit(takeProfit)}
+                        onClick={lockTp}
+                        disabled={levelLocks.tp}
                         className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
-                          tpConfirmed
-                            ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                          levelLocks.tp
+                            ? "cursor-not-allowed border border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
                             : "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15"
                         }`}
                       >
-                        {tpConfirmed ? "Set" : "Set TP"}
+                        {levelLocks.tp ? "Locked" : "Lock TP"}
                       </button>
                     ) : null}
                   </div>
@@ -1150,41 +1286,99 @@ export default function TradePage() {
                           ? formatPrice(stopLoss, symbol)
                           : "Disabled"}
                       </p>
-                      <p className="mt-1 text-[11px] text-white/35">Drag SL label on chart</p>
+                      <p className="mt-1 text-[11px] text-white/35">
+                        {!useStopLoss ? "Disabled" : levelLocks.sl ? "Locked" : "Drag on chart, then lock"}
+                      </p>
                     </div>
 
                     {useStopLoss && stopLoss !== null ? (
                       <button
-                        onClick={() => setConfirmedStopLoss(stopLoss)}
+                        onClick={lockSl}
+                        disabled={levelLocks.sl}
                         className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
-                          slConfirmed
-                            ? "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                          levelLocks.sl
+                            ? "cursor-not-allowed border border-red-400/30 bg-red-500/10 text-red-300"
                             : "border border-red-400/30 bg-red-500/10 text-red-300 hover:bg-red-500/15"
                         }`}
                       >
-                        {slConfirmed ? "Set" : "Set SL"}
+                        {levelLocks.sl ? "Locked" : "Lock SL"}
                       </button>
                     ) : null}
                   </div>
                 </div>
               </div>
 
+              {orderType === "limit" ? (
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-white/45">Limit workflow</p>
+                  <div className="mt-3 grid grid-cols-4 gap-2 text-center text-xs">
+                    <div
+                      className={`rounded-xl px-3 py-2 ${
+                        levelLocks.entry
+                          ? "bg-cyan-500/15 text-cyan-300"
+                          : "bg-white/5 text-white/45"
+                      }`}
+                    >
+                      Entry
+                    </div>
+                    <div
+                      className={`rounded-xl px-3 py-2 ${
+                        !useTakeProfit || levelLocks.tp
+                          ? "bg-emerald-500/15 text-emerald-300"
+                          : "bg-white/5 text-white/45"
+                      }`}
+                    >
+                      TP
+                    </div>
+                    <div
+                      className={`rounded-xl px-3 py-2 ${
+                        !useStopLoss || levelLocks.sl
+                          ? "bg-red-500/15 text-red-300"
+                          : "bg-white/5 text-white/45"
+                      }`}
+                    >
+                      SL
+                    </div>
+                    <div
+                      className={`rounded-xl px-3 py-2 ${
+                        limitReady
+                          ? "bg-amber-500/15 text-amber-300"
+                          : "bg-white/5 text-white/45"
+                      }`}
+                    >
+                      Confirm
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={unlockAllLevels}
+                    className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white/75 transition hover:bg-white/10 hover:text-white"
+                  >
+                    Edit Levels
+                  </button>
+                </div>
+              ) : null}
+
               <button
                 onClick={placeTrade}
-                disabled={isBreached}
+                disabled={isBreached || !limitReady}
                 className={`w-full rounded-2xl px-4 py-4 text-sm font-semibold transition ${
                   isBreached
                     ? "cursor-not-allowed border border-red-400/20 bg-red-500/10 text-red-300"
-                    : side === "buy"
-                      ? "bg-emerald-500 text-black hover:bg-emerald-400"
-                      : "bg-red-500 text-white hover:bg-red-400"
+                    : !limitReady
+                      ? "cursor-not-allowed border border-amber-400/20 bg-amber-500/10 text-amber-300"
+                      : side === "buy"
+                        ? "bg-emerald-500 text-black hover:bg-emerald-400"
+                        : "bg-red-500 text-white hover:bg-red-400"
                 }`}
               >
                 {isBreached
                   ? "Trading Locked"
                   : orderType === "market"
                     ? `Place ${side === "buy" ? "Buy" : "Sell"} Market`
-                    : `Confirm ${side === "buy" ? "Buy" : "Sell"} Limit`}
+                    : limitReady
+                      ? `Confirm ${side === "buy" ? "Buy" : "Sell"} Limit`
+                      : "Lock Entry / TP / SL First"}
               </button>
             </div>
           </div>

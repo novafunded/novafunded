@@ -8,6 +8,7 @@ type CheckoutRequestBody = {
 }
 
 const PROD_APP_URL = "https://novafunded.space"
+const DEV_APP_URL = "http://localhost:3000"
 
 export async function POST(req: Request) {
   try {
@@ -34,10 +35,10 @@ export async function POST(req: Request) {
       )
     }
 
-    // Force Stripe to always use your real production domain.
-    // This avoids Vercel preview / temporary deployment URLs getting used.
-    const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL?.trim() || PROD_APP_URL
+    const isProduction = process.env.VERCEL_ENV === "production"
+    const appUrl = isProduction
+      ? PROD_APP_URL
+      : process.env.NEXT_PUBLIC_APP_URL?.trim() || DEV_APP_URL
 
     const stripe = getStripe()
 

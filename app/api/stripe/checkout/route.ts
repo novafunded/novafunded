@@ -7,6 +7,8 @@ type CheckoutRequestBody = {
   email?: string
 }
 
+const PROD_APP_URL = "https://novafunded.space"
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as CheckoutRequestBody
@@ -27,15 +29,15 @@ export async function POST(req: Request) {
     const priceId = process.env.STRIPE_PRICE_ID_FLASH_5K
     if (!priceId || priceId.trim() === "") {
       return NextResponse.json(
-        { error: "Missing STRIPE_PRICE_ID_FLASH_5K in .env.local." },
+        { error: "Missing STRIPE_PRICE_ID_FLASH_5K in environment variables." },
         { status: 500 }
       )
     }
 
-    const origin =
-      process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-      req.headers.get("origin") ||
-      "http://localhost:3000"
+    // Force Stripe to always use your real production domain.
+    // This avoids Vercel preview / temporary deployment URLs getting used.
+    const appUrl =
+      process.env.NEXT_PUBLIC_APP_URL?.trim() || PROD_APP_URL
 
     const stripe = getStripe()
 
@@ -53,8 +55,8 @@ export async function POST(req: Request) {
         email,
         challenge: "flash_5k",
       },
-      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/checkout?checkout=cancelled`,
+      success_url: `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}/checkout?checkout=cancelled`,
     })
 
     if (!session.url) {

@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { onAuthStateChanged, type User } from "firebase/auth"
 import { useRouter, useSearchParams } from "next/navigation"
 import { auth } from "@/lib/firebase"
@@ -37,7 +37,7 @@ const checkoutHighlights = [
   },
 ]
 
-export default function CheckoutPage() {
+function CheckoutContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -354,5 +354,23 @@ export default function CheckoutPage() {
         </main>
       </div>
     </div>
+  )
+}
+
+export default function CheckoutPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#0A0A0A] text-white">
+          <div className="flex min-h-screen items-center justify-center px-4">
+            <div className="rounded-3xl border border-white/10 bg-white/5 px-6 py-5 text-sm text-white/70 backdrop-blur-sm">
+              Loading checkout...
+            </div>
+          </div>
+        </div>
+      }
+    >
+      <CheckoutContent />
+    </Suspense>
   )
 }

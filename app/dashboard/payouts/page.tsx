@@ -122,7 +122,10 @@ export default function PayoutsPage() {
     },
     {
       title: "Open Positions",
-      value: metrics.openTrades.length === 0 && metrics.pendingTrades.length === 0 ? "Closed" : "Still Open",
+      value:
+        metrics.openTrades.length === 0 && metrics.pendingTrades.length === 0
+          ? "Closed"
+          : "Still Open",
       desc: "All active trades must be closed before entering a payout request window.",
     },
     {
@@ -193,7 +196,7 @@ export default function PayoutsPage() {
                 💸 Payout Center
               </div>
               <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                Manage withdrawals, payout cycles, and trader profit splits
+                LIVE FIRESTORE PAYOUTS
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
                 Live payout eligibility pulled from your active account and trade history.

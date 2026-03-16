@@ -1,4 +1,5 @@
 import {
+  Timestamp,
   collection,
   doc,
   getDoc,
@@ -30,11 +31,24 @@ export type AccountData = {
 export type TradeRecord = {
   id: string
   symbol: string
-  side: string
+  side: "buy" | "sell"
+  orderType: "market" | "limit"
+  status: "pending" | "open" | "closed" | "cancelled"
+  requestedEntry: number
+  entry: number | null
+  useStopLoss: boolean
+  useTakeProfit: boolean
+  stopLoss: number | null
+  takeProfit: number | null
+  size: number
   pnl: number
+  closeReason?: "tp" | "sl" | "manual" | "breach"
   accountId?: string
   userId?: string
   createdAtMs?: number
+  openedAtMs?: number | null
+  closedAtMs?: number | null
+  closePrice?: number | null
 }
 
 export type UserProfile = {
@@ -67,6 +81,10 @@ type LoadTradingContextOptions = {
 
 function readTimestampMs(value: unknown): number | undefined {
   if (typeof value === "number") return value
+
+  if (value instanceof Timestamp) {
+    return value.toMillis()
+  }
 
   if (
     value &&
@@ -116,14 +134,50 @@ function mapTradeDoc(
   return {
     id: tradeId,
     symbol: typeof data.symbol === "string" ? data.symbol : "XAUUSD",
-    side: typeof data.side === "string" ? data.side : "buy",
+    side: data.side === "sell" ? "sell" : "buy",
+    orderType: data.orderType === "limit" ? "limit" : "market",
+    status:
+      data.status === "pending" ||
+      data.status === "open" ||
+      data.status === "closed" ||
+      data.status === "cancelled"
+        ? data.status
+        : "closed",
+    requestedEntry:
+      typeof data.requestedEntry === "number"
+        ? data.requestedEntry
+        : typeof data.entry === "number"
+          ? data.entry
+          : 0,
+    entry: typeof data.entry === "number" ? data.entry : null,
+    useStopLoss: typeof data.useStopLoss === "boolean" ? data.useStopLoss : true,
+    useTakeProfit: typeof data.useTakeProfit === "boolean" ? data.useTakeProfit : true,
+    stopLoss: typeof data.stopLoss === "number" ? data.stopLoss : null,
+    takeProfit: typeof data.takeProfit === "number" ? data.takeProfit : null,
+    size: typeof data.size === "number" ? data.size : 1,
     pnl: typeof data.pnl === "number" ? data.pnl : 0,
+    closeReason:
+      data.closeReason === "tp" ||
+      data.closeReason === "sl" ||
+      data.closeReason === "manual" ||
+      data.closeReason === "breach"
+        ? data.closeReason
+        : undefined,
     accountId: typeof data.accountId === "string" ? data.accountId : undefined,
     userId: typeof data.userId === "string" ? data.userId : undefined,
     createdAtMs:
       typeof data.createdAtMs === "number"
         ? data.createdAtMs
         : readTimestampMs(data.createdAt),
+    openedAtMs:
+      typeof data.openedAtMs === "number"
+        ? data.openedAtMs
+        : readTimestampMs(data.openedAt),
+    closedAtMs:
+      typeof data.closedAtMs === "number"
+        ? data.closedAtMs
+        : readTimestampMs(data.closedAt),
+    closePrice: typeof data.closePrice === "number" ? data.closePrice : null,
   }
 }
 
@@ -199,7 +253,7 @@ export async function loadTradingContext(
   options?: LoadTradingContextOptions,
 ): Promise<TradingContext> {
   const includeTrades = options?.includeTrades ?? true
-  const tradeLimit = options?.tradeLimit ?? 8
+  const tradeLimit = options?.tradeLimit ?? 200
 
   const userRef = doc(db, "users", uid)
   const userSnap = await getDoc(userRef)

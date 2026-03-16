@@ -1,8 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { onAuthStateChanged } from "firebase/auth"
 import TradingViewChart from "@/components/dashboard/TradingViewChart"
 import ChartTradeOverlay from "@/components/dashboard/ChartTradeOverlay"
+import { auth } from "@/lib/firebase"
+import { loadTradingContext, type AccountData } from "@/lib/tradingAccount"
+import { syncTerminalState } from "@/lib/tradeTerminalSync"
 
 type OrderSide = "buy" | "sell"
 type OrderType = "market" | "limit"
@@ -28,6 +32,7 @@ type Trade = {
   closePrice: number | null
   pnl: number
   closeReason?: CloseReason
+  createdAt: number
 }
 
 type LevelLocks = {
@@ -95,11 +100,6 @@ const SYMBOLS: Record<
   },
 }
 
-const START_BALANCE = 5000
-const MAX_LOSS_LIMIT = 500
-const DAILY_LOSS_LIMIT = 250
-const PROFIT_TARGET = 400
-
 function getStepDecimals(step: number) {
   const stepText = step.toString()
   if (!stepText.includes(".")) return 0
@@ -157,7 +157,7 @@ function percentToPrice(percent: number, low: number, high: number, step: number
 
 function computePnl(
   trade: Pick<Trade, "entry" | "requestedEntry" | "side" | "size" | "symbol">,
-  price: number
+  price: number,
 ) {
   const filledEntry = trade.entry ?? trade.requestedEntry
   const diff = trade.side === "buy" ? price - filledEntry : filledEntry - price
@@ -174,7 +174,7 @@ function buildDefaultLevels(
   base: number,
   risk: number,
   reward: number,
-  step: number
+  step: number,
 ) {
   const rawEntry = roundToStep(base, step)
 
@@ -274,37 +274,45 @@ export default function TradePage() {
   const [trades, setTrades] = useState<Trade[]>([])
   const [dragTarget, setDragTarget] = useState<DragTarget>(null)
   const [isHydrated, setIsHydrated] = useState(false)
+  const [currentUid, setCurrentUid] = useState("")
+  const [accountData, setAccountData] = useState<AccountData | null>(null)
 
   const chartRef = useRef<HTMLDivElement | null>(null)
   const frozenDragRangeRef = useRef<{ low: number; high: number } | null>(null)
+  const dragEntryRef = useRef<number | null>(null)
+
+  const startBalance = accountData?.startBalance ?? 5000
+  const maxLossLimit = accountData?.maxLossLimit ?? 500
+  const dailyLossLimit = accountData?.dailyLossLimit ?? 250
+  const profitTarget = 400
 
   const balance = useMemo(() => {
     const closedPnl = trades
       .filter((trade) => trade.status === "closed")
       .reduce((sum, trade) => sum + trade.pnl, 0)
 
-    return Number((START_BALANCE + closedPnl).toFixed(2))
-  }, [trades])
+    return Number((startBalance + closedPnl).toFixed(2))
+  }, [startBalance, trades])
 
   const floatingPnl = useMemo(() => {
     return Number(
       trades
         .filter((trade) => trade.status === "open")
         .reduce((sum, trade) => sum + computePnl(trade, livePrice), 0)
-        .toFixed(2)
+        .toFixed(2),
     )
   }, [trades, livePrice])
 
   const equity = Number((balance + floatingPnl).toFixed(2))
-  const drawdownLeft = Number((equity - (START_BALANCE - MAX_LOSS_LIMIT)).toFixed(2))
-  const dailyLossLeft = Number((equity - (START_BALANCE - DAILY_LOSS_LIMIT)).toFixed(2))
-  const netPnl = Number((equity - START_BALANCE).toFixed(2))
+  const drawdownLeft = Number((equity - (startBalance - maxLossLimit)).toFixed(2))
+  const dailyLossLeft = Number((equity - (startBalance - dailyLossLimit)).toFixed(2))
+  const netPnl = Number((equity - startBalance).toFixed(2))
   const closedTrades = trades.filter((trade) => trade.status === "closed")
   const openTrades = trades.filter((trade) => trade.status === "open")
   const pendingTrades = trades.filter((trade) => trade.status === "pending")
   const isBreached =
-    equity <= START_BALANCE - MAX_LOSS_LIMIT || equity <= START_BALANCE - DAILY_LOSS_LIMIT
-  const isPassed = !isBreached && balance >= START_BALANCE + PROFIT_TARGET
+    equity <= startBalance - maxLossLimit || equity <= startBalance - dailyLossLimit
+  const isPassed = !isBreached && balance >= startBalance + profitTarget
 
   const tradingDays = useMemo(() => {
     const opened = trades
@@ -354,12 +362,14 @@ export default function TradePage() {
     }
   }, [balance, closedTrades.length, equity, isBreached, isPassed, tradingDays])
 
-  function resetSetup(next?: Partial<{
-    nextSymbol: keyof typeof SYMBOLS
-    nextSide: OrderSide
-    nextOrderType: OrderType
-    keepLivePrice: boolean
-  }>) {
+  function resetSetup(
+    next?: Partial<{
+      nextSymbol: keyof typeof SYMBOLS
+      nextSide: OrderSide
+      nextOrderType: OrderType
+      keepLivePrice: boolean
+    }>,
+  ) {
     const selectedSymbol = next?.nextSymbol ?? symbol
     const selectedSide = next?.nextSide ?? side
     const selectedOrderType = next?.nextOrderType ?? orderType
@@ -371,7 +381,7 @@ export default function TradePage() {
       base,
       meta.defaultRisk,
       meta.defaultReward,
-      meta.minMove
+      meta.minMove,
     )
 
     const validEntry =
@@ -405,7 +415,32 @@ export default function TradePage() {
     })
     setDragTarget(null)
     frozenDragRangeRef.current = null
+    dragEntryRef.current = null
   }
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setCurrentUid("")
+        setAccountData(null)
+        return
+      }
+
+      setCurrentUid(user.uid)
+
+      const context = await loadTradingContext(user.uid, {
+        includeTrades: false,
+      })
+
+      if (context.account) {
+        setAccountData(context.account)
+      } else {
+        setAccountData(null)
+      }
+    })
+
+    return () => unsub()
+  }, [])
 
   useEffect(() => {
     const savedTrades = window.localStorage.getItem("novafunded-trades")
@@ -413,7 +448,16 @@ export default function TradePage() {
 
     if (savedTrades) {
       try {
-        setTrades(JSON.parse(savedTrades) as Trade[])
+        const parsedTrades = JSON.parse(savedTrades) as Array<Trade & { createdAt?: number }>
+        setTrades(
+          parsedTrades.map((trade) => ({
+            ...trade,
+            createdAt:
+              typeof trade.createdAt === "number"
+                ? trade.createdAt
+                : trade.openedAt ?? trade.closedAt ?? Date.now(),
+          })),
+        )
       } catch {
         // ignore bad local data
       }
@@ -456,7 +500,7 @@ export default function TradePage() {
           SYMBOLS[nextSymbol].startPrice,
           SYMBOLS[nextSymbol].defaultRisk,
           SYMBOLS[nextSymbol].defaultReward,
-          SYMBOLS[nextSymbol].minMove
+          SYMBOLS[nextSymbol].minMove,
         )
 
         const restoredEntry =
@@ -470,21 +514,21 @@ export default function TradePage() {
                   ? parsed.livePrice
                   : SYMBOLS[nextSymbol].startPrice,
                 restoredEntry,
-                SYMBOLS[nextSymbol].minMove
+                SYMBOLS[nextSymbol].minMove,
               )
-            : restoredEntry
+            : restoredEntry,
         )
 
         setStopLoss(
           parsed.stopLoss === null || typeof parsed.stopLoss === "number"
             ? parsed.stopLoss
-            : baseDefaults.stopLoss
+            : baseDefaults.stopLoss,
         )
 
         setTakeProfit(
           parsed.takeProfit === null || typeof parsed.takeProfit === "number"
             ? parsed.takeProfit
-            : baseDefaults.takeProfit
+            : baseDefaults.takeProfit,
         )
 
         setLevelLocks(
@@ -492,7 +536,7 @@ export default function TradePage() {
             entry: nextOrderType === "market",
             tp: false,
             sl: false,
-          }
+          },
         )
       } catch {
         resetSetup({
@@ -510,7 +554,6 @@ export default function TradePage() {
     }
 
     setIsHydrated(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -535,7 +578,7 @@ export default function TradePage() {
         useTakeProfit,
         livePrice,
         levelLocks,
-      })
+      }),
     )
   }, [
     isHydrated,
@@ -558,7 +601,43 @@ export default function TradePage() {
   }, [syncedAccount])
 
   useEffect(() => {
+    if (!isHydrated || !currentUid || !accountData) return
+
+    const timeout = window.setTimeout(() => {
+      void syncTerminalState({
+        uid: currentUid,
+        account: accountData,
+        trades: trades.map((trade) => ({
+          ...trade,
+          createdAt: trade.createdAt,
+        })),
+        balance,
+        equity,
+        tradingDays,
+        closedTrades: closedTrades.length,
+        breached: isBreached,
+        status: isBreached ? "breached" : isPassed ? "passed" : "active",
+      })
+    }, 250)
+
+    return () => window.clearTimeout(timeout)
+  }, [
+    isHydrated,
+    currentUid,
+    accountData,
+    trades,
+    balance,
+    equity,
+    tradingDays,
+    closedTrades.length,
+    isBreached,
+    isPassed,
+  ])
+
+  useEffect(() => {
     const interval = window.setInterval(() => {
+      if (dragTarget) return
+
       const moveBase =
         symbol === "EURUSD" || symbol === "GBPUSD"
           ? 0.00035
@@ -573,7 +652,7 @@ export default function TradePage() {
     }, 1400)
 
     return () => window.clearInterval(interval)
-  }, [symbol, symbolMeta.minMove])
+  }, [dragTarget, symbol, symbolMeta.minMove])
 
   useEffect(() => {
     setTrades((prev) => {
@@ -651,14 +730,6 @@ export default function TradePage() {
               closeReason: "sl" as const,
             }
           }
-
-          if (trade.pnl !== runningPnl) {
-            changed = true
-            return {
-              ...trade,
-              pnl: runningPnl,
-            }
-          }
         }
 
         return trade
@@ -679,14 +750,13 @@ export default function TradePage() {
           orderType === "market" ? livePrice : previewEntry,
           symbolMeta.defaultRisk,
           symbolMeta.defaultReward,
-          symbolMeta.minMove
+          symbolMeta.minMove,
         )
         setStopLoss(defaults.stopLoss)
       }
       setLevelLocks((prev) => ({ ...prev, sl: false }))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useStopLoss])
+  }, [useStopLoss, side, orderType, livePrice, previewEntry, symbolMeta])
 
   useEffect(() => {
     if (!useTakeProfit) {
@@ -699,14 +769,13 @@ export default function TradePage() {
           orderType === "market" ? livePrice : previewEntry,
           symbolMeta.defaultRisk,
           symbolMeta.defaultReward,
-          symbolMeta.minMove
+          symbolMeta.minMove,
         )
         setTakeProfit(defaults.takeProfit)
       }
       setLevelLocks((prev) => ({ ...prev, tp: false }))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useTakeProfit])
+  }, [useTakeProfit, side, orderType, livePrice, previewEntry, symbolMeta, takeProfit])
 
   function handleSymbolChange(nextSymbol: keyof typeof SYMBOLS) {
     setSymbol(nextSymbol)
@@ -859,6 +928,7 @@ export default function TradePage() {
       closedAt: null,
       closePrice: null,
       pnl: 0,
+      createdAt: Date.now(),
     }
 
     setTrades((prev) => [trade, ...prev])
@@ -880,13 +950,13 @@ export default function TradePage() {
 
         return {
           ...trade,
-          status: "closed",
+          status: "closed" as const,
           closedAt: Date.now(),
           closePrice: livePrice,
           pnl: computePnl(trade, livePrice),
-          closeReason: "manual",
+          closeReason: "manual" as const,
         }
-      })
+      }),
     )
   }
 
@@ -896,8 +966,8 @@ export default function TradePage() {
     setTrades((prev) =>
       prev.map((trade) => {
         if (trade.id !== id || trade.status !== "pending") return trade
-        return { ...trade, status: "cancelled" }
-      })
+        return { ...trade, status: "cancelled" as const }
+      }),
     )
   }
 
@@ -911,7 +981,10 @@ export default function TradePage() {
     const minGap = getMinGap(symbolMeta.minMove)
 
     const currentEntry =
-      orderType === "market" ? roundToStep(livePrice, symbolMeta.minMove) : previewEntry
+      dragEntryRef.current ??
+      (orderType === "market"
+        ? roundToStep(livePrice, symbolMeta.minMove)
+        : previewEntry)
 
     if (target === "entry") {
       if (orderType !== "limit" || levelLocks.entry) return
@@ -963,29 +1036,26 @@ export default function TradePage() {
 
     const activeDragTarget = dragTarget
 
-    function onMove(event: MouseEvent) {
+    function onPointerMove(event: PointerEvent) {
       updateDraggedLevel(event.clientY, activeDragTarget)
     }
 
-    function onUp() {
+    function onPointerUp() {
       frozenDragRangeRef.current = null
+      dragEntryRef.current = null
       setDragTarget(null)
     }
 
-    window.addEventListener("mousemove", onMove)
-    window.addEventListener("mouseup", onUp)
+    window.addEventListener("pointermove", onPointerMove)
+    window.addEventListener("pointerup", onPointerUp)
 
     return () => {
-      window.removeEventListener("mousemove", onMove)
-      window.removeEventListener("mouseup", onUp)
+      window.removeEventListener("pointermove", onPointerMove)
+      window.removeEventListener("pointerup", onPointerUp)
     }
   }, [dragTarget, activeOverlayRange, symbolMeta.minMove, livePrice, previewEntry, orderType, side, levelLocks, useStopLoss, useTakeProfit, isBreached])
 
-  const targetProgress = clamp(
-    (Math.max(balance - START_BALANCE, 0) / PROFIT_TARGET) * 100,
-    0,
-    100
-  )
+  const targetProgress = clamp((Math.max(balance - startBalance, 0) / profitTarget) * 100, 0, 100)
 
   const labelY = {
     entry: priceToPercent(previewEntry, activeOverlayRange.low, activeOverlayRange.high),
@@ -1006,11 +1076,7 @@ export default function TradePage() {
   const riskPerTrade =
     useStopLoss && effectiveStopLoss !== null
       ? Number(
-          (
-            Math.abs(previewEntry - effectiveStopLoss) *
-            size *
-            symbolMeta.pnlPerPoint
-          ).toFixed(2)
+          (Math.abs(previewEntry - effectiveStopLoss) * size * symbolMeta.pnlPerPoint).toFixed(2),
         )
       : null
 
@@ -1072,14 +1138,16 @@ export default function TradePage() {
                 style={{ top: `${labelY.entry}%` }}
               >
                 <button
-                  onMouseDown={() => {
+                  onPointerDown={(event) => {
+                    event.preventDefault()
                     if (isBreached) return
                     if (orderType === "limit" && !levelLocks.entry) {
                       frozenDragRangeRef.current = overlayRangeBase
+                      dragEntryRef.current = previewEntry
                       setDragTarget("entry")
                     }
                   }}
-                  className={`rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
+                  className={`touch-none rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
                     orderType === "market"
                       ? "border border-cyan-400/25 bg-cyan-500/10 text-cyan-300/80"
                       : levelLocks.entry
@@ -1097,14 +1165,16 @@ export default function TradePage() {
                   style={{ top: `${labelY.tp}%` }}
                 >
                   <button
-                    onMouseDown={() => {
+                    onPointerDown={(event) => {
+                      event.preventDefault()
                       if (isBreached) return
                       if (!levelLocks.tp) {
                         frozenDragRangeRef.current = overlayRangeBase
+                        dragEntryRef.current = previewEntry
                         setDragTarget("tp")
                       }
                     }}
-                    className={`rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
+                    className={`touch-none rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
                       levelLocks.tp
                         ? "border border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
                         : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
@@ -1121,14 +1191,16 @@ export default function TradePage() {
                   style={{ top: `${labelY.sl}%` }}
                 >
                   <button
-                    onMouseDown={() => {
+                    onPointerDown={(event) => {
+                      event.preventDefault()
                       if (isBreached) return
                       if (!levelLocks.sl) {
                         frozenDragRangeRef.current = overlayRangeBase
+                        dragEntryRef.current = previewEntry
                         setDragTarget("sl")
                       }
                     }}
-                    className={`rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
+                    className={`touch-none rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
                       levelLocks.sl
                         ? "border border-red-400/40 bg-red-500/15 text-red-300"
                         : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
@@ -1301,9 +1373,7 @@ export default function TradePage() {
                     <button
                       key={value}
                       onClick={() =>
-                        setSize((prev) =>
-                          clamp(prev + value, 1, symbolMeta.maxSize)
-                        )
+                        setSize((prev) => clamp(prev + value, 1, symbolMeta.maxSize))
                       }
                       disabled={isBreached}
                       className={`rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/75 transition hover:bg-white/10 hover:text-white ${
@@ -1647,8 +1717,18 @@ export default function TradePage() {
                             ? formatPrice(trade.stopLoss, trade.symbol)
                             : "Disabled"}
                         </div>
-                        <div className={trade.pnl >= 0 ? "text-emerald-300" : "text-red-300"}>
-                          PnL: {trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}
+                        <div
+                          className={
+                            (trade.status === "open" ? computePnl(trade, livePrice) : trade.pnl) >= 0
+                              ? "text-emerald-300"
+                              : "text-red-300"
+                          }
+                        >
+                          {(() => {
+                            const displayPnl =
+                              trade.status === "open" ? computePnl(trade, livePrice) : trade.pnl
+                            return <>PnL: {displayPnl >= 0 ? "+" : ""}${displayPnl.toFixed(2)}</>
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -1726,7 +1806,7 @@ export default function TradePage() {
                           Exit:{" "}
                           {formatPrice(
                             trade.closePrice ?? (trade.entry ?? trade.requestedEntry),
-                            trade.symbol
+                            trade.symbol,
                           )}
                         </div>
                         <div>

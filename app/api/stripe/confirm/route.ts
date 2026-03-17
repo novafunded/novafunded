@@ -6,10 +6,6 @@ import { adminDb } from "@/lib/firebaseAdmin"
 
 export const runtime = "nodejs"
 
-type ConfirmRequestBody = {
-  sessionId?: string
-}
-
 type ChallengePreset = {
   planName: string
   startBalance: number
@@ -24,9 +20,7 @@ const DEFAULT_CHALLENGE: ChallengePreset = {
   maxLossLimit: 500,
 }
 
-function buildChallengePreset(
-  challengeKey: string | null | undefined,
-): ChallengePreset {
+function buildChallengePreset(challengeKey?: string | null): ChallengePreset {
   if (challengeKey === "flash_5k") {
     return DEFAULT_CHALLENGE
   }
@@ -34,17 +28,18 @@ function buildChallengePreset(
   return DEFAULT_CHALLENGE
 }
 
-async function activatePaidChallenge(params: {
+async function activatePaidChallenge({
+  uid,
+  email,
+  challengeKey,
+}: {
   uid: string
   email: string
   challengeKey?: string | null
 }) {
-  const { uid, email, challengeKey } = params
   const preset = buildChallengePreset(challengeKey)
-
   const userRef = adminDb.collection("users").doc(uid)
   const userSnap = await userRef.get()
-
   const normalizedEmail = email.trim().toLowerCase()
 
   if (!userSnap.exists) {
@@ -55,48 +50,24 @@ async function activatePaidChallenge(params: {
       activeAccountId: "",
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
+      lastChallengeActivatedAt: FieldValue.serverTimestamp(),
     })
   } else {
-    const userData = userSnap.data() as {
-      email?: string
-      activeAccountId?: string
-    }
+    const userData = userSnap.data() as { email?: string } | undefined
 
     const userUpdates: Record<string, unknown> = {
       updatedAt: FieldValue.serverTimestamp(),
+      lastChallengeActivatedAt: FieldValue.serverTimestamp(),
     }
 
     if (
-      typeof userData.email !== "string" ||
+      typeof userData?.email !== "string" ||
       userData.email.trim().toLowerCase() !== normalizedEmail
     ) {
       userUpdates.email = normalizedEmail
     }
 
-    await userRef.update(userUpdates)
-  }
-
-  const refreshedUserSnap = await userRef.get()
-  const refreshedUserData = refreshedUserSnap.data() as
-    | {
-        activeAccountId?: string
-      }
-    | undefined
-
-  const existingActiveAccountId =
-    typeof refreshedUserData?.activeAccountId === "string"
-      ? refreshedUserData.activeAccountId.trim()
-      : ""
-
-  if (existingActiveAccountId) {
-    const existingAccountRef = adminDb
-      .collection("accounts")
-      .doc(existingActiveAccountId)
-    const existingAccountSnap = await existingAccountRef.get()
-
-    if (existingAccountSnap.exists) {
-      return existingActiveAccountId
-    }
+    await userRef.set(userUpdates, { merge: true })
   }
 
   const newAccountRef = adminDb.collection("accounts").doc()
@@ -114,29 +85,32 @@ async function activatePaidChallenge(params: {
     status: "active",
     tradingDays: 0,
     closedTrades: 0,
+    activatedAt: FieldValue.serverTimestamp(),
     createdAt: FieldValue.serverTimestamp(),
+    createdAtMs: Date.now(),
     updatedAt: FieldValue.serverTimestamp(),
   })
 
-  await userRef.update({
-    activeAccountId: newAccountRef.id,
-    updatedAt: FieldValue.serverTimestamp(),
-  })
+  await userRef.set(
+    {
+      activeAccountId: newAccountRef.id,
+      updatedAt: FieldValue.serverTimestamp(),
+      lastChallengeActivatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
 
   return newAccountRef.id
 }
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    const body = (await req.json()) as ConfirmRequestBody
+    const body = (await request.json()) as { sessionId?: string }
     const sessionId =
       typeof body.sessionId === "string" ? body.sessionId.trim() : ""
 
     if (!sessionId) {
-      return NextResponse.json(
-        { error: "Missing sessionId." },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: "Missing sessionId." }, { status: 400 })
     }
 
     const stripe = getStripe()
@@ -168,14 +142,14 @@ export async function POST(req: Request) {
     if (!paid) {
       return NextResponse.json(
         { error: "Stripe session is not paid yet." },
-        { status: 400 }
+        { status: 400 },
       )
     }
 
     if (!userId || !email) {
       return NextResponse.json(
         { error: "Missing Stripe session metadata for activation." },
-        { status: 400 }
+        { status: 400 },
       )
     }
 
@@ -194,27 +168,21 @@ export async function POST(req: Request) {
 
     if (error instanceof Stripe.errors.StripeError) {
       return NextResponse.json(
-        {
-          error: error.message || "Stripe confirmation failed.",
-        },
-        { status: 500 }
+        { error: error.message || "Stripe confirmation failed." },
+        { status: 500 },
       )
     }
 
     if (error instanceof Error) {
       return NextResponse.json(
-        {
-          error: error.message || "Failed to confirm Stripe session.",
-        },
-        { status: 500 }
+        { error: error.message || "Failed to confirm Stripe session." },
+        { status: 500 },
       )
     }
 
     return NextResponse.json(
-      {
-        error: "Failed to confirm Stripe session.",
-      },
-      { status: 500 }
+      { error: "Failed to confirm Stripe session." },
+      { status: 500 },
     )
   }
 }

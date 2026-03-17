@@ -20,7 +20,7 @@ function mapSymbol(symbol: string) {
   if (symbol === "GBPUSD") return "OANDA:GBPUSD"
   if (symbol === "NAS100") return "OANDA:NAS100USD"
   if (symbol === "BTCUSD") return "BITSTAMP:BTCUSD"
-  return "OANDA:XAUUSD"
+  return "BITSTAMP:BTCUSD"
 }
 
 export default function TradingViewChart({ symbol }: TradingViewChartProps) {
@@ -54,17 +54,17 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
         hotlist: false,
         calendar: false,
         studies: [],
-        toolbar_bg: "#08111b",
+        toolbar_bg: "#0a1220",
         loading_screen: {
           backgroundColor: "#050a11",
-          foregroundColor: "#8fb3d9",
+          foregroundColor: "#8faecc",
         },
         overrides: {
           "paneProperties.background": "#050a11",
           "paneProperties.backgroundType": "solid",
-          "paneProperties.vertGridProperties.color": "rgba(255,255,255,0.035)",
-          "paneProperties.horzGridProperties.color": "rgba(255,255,255,0.035)",
-          "paneProperties.crossHairProperties.color": "rgba(255,255,255,0.18)",
+          "paneProperties.vertGridProperties.color": "rgba(255,255,255,0.03)",
+          "paneProperties.horzGridProperties.color": "rgba(255,255,255,0.03)",
+          "paneProperties.crossHairProperties.color": "rgba(255,255,255,0.16)",
           "paneProperties.crossHairProperties.width": 1,
           "paneProperties.legendProperties.showLegend": true,
           "paneProperties.legendProperties.showStudyArguments": false,
@@ -75,7 +75,7 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
           "paneProperties.legendProperties.showBarChange": false,
           "scalesProperties.backgroundColor": "#050a11",
           "scalesProperties.lineColor": "rgba(255,255,255,0.06)",
-          "scalesProperties.textColor": "rgba(221,230,238,0.62)",
+          "scalesProperties.textColor": "rgba(226,234,242,0.62)",
           "mainSeriesProperties.priceAxisProperties.autoScale": true,
           "mainSeriesProperties.candleStyle.upColor": "#10b981",
           "mainSeriesProperties.candleStyle.downColor": "#ef4444",
@@ -86,7 +86,7 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
           "mainSeriesProperties.candleStyle.drawWick": true,
           "mainSeriesProperties.candleStyle.drawBorder": true,
           "mainSeriesProperties.showCountdown": false,
-          "mainSeriesProperties.priceLineColor": "rgba(255,255,255,0.18)",
+          "mainSeriesProperties.priceLineColor": "rgba(255,255,255,0.16)",
           "mainSeriesProperties.priceLineWidth": 1,
           "mainSeriesProperties.lastValueVisible": true,
         },
@@ -142,7 +142,7 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
   }, [symbol, containerId])
 
   return (
-    <div className="relative h-[640px] w-full overflow-hidden rounded-none pointer-events-auto">
+    <div className="relative h-[640px] w-full overflow-hidden bg-[#050a11] pointer-events-auto">
       <div ref={wrapperRef} className="h-full w-full pointer-events-auto" />
     </div>
   )

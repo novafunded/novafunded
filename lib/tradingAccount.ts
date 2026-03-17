@@ -248,6 +248,64 @@ export function syncTradeAccountSnapshot(account: AccountData | null) {
   window.dispatchEvent(new Event("novafunded-account-sync"))
 }
 
+async function getFallbackAccountForUser(uid: string): Promise<AccountData | null> {
+  const byActivation = await getDocs(
+    query(
+      collection(db, "accounts"),
+      where("userId", "==", uid),
+      orderBy("activatedAt", "desc"),
+      limit(1),
+    ),
+  )
+
+  if (!byActivation.empty) {
+    const docSnap = byActivation.docs[0]
+    return mapAccountDoc(
+      docSnap.id,
+      uid,
+      docSnap.data() as Record<string, unknown>,
+    )
+  }
+
+  const byCreatedMs = await getDocs(
+    query(
+      collection(db, "accounts"),
+      where("userId", "==", uid),
+      orderBy("createdAtMs", "desc"),
+      limit(1),
+    ),
+  )
+
+  if (!byCreatedMs.empty) {
+    const docSnap = byCreatedMs.docs[0]
+    return mapAccountDoc(
+      docSnap.id,
+      uid,
+      docSnap.data() as Record<string, unknown>,
+    )
+  }
+
+  const byCreatedAt = await getDocs(
+    query(
+      collection(db, "accounts"),
+      where("userId", "==", uid),
+      orderBy("createdAt", "desc"),
+      limit(1),
+    ),
+  )
+
+  if (!byCreatedAt.empty) {
+    const docSnap = byCreatedAt.docs[0]
+    return mapAccountDoc(
+      docSnap.id,
+      uid,
+      docSnap.data() as Record<string, unknown>,
+    )
+  }
+
+  return null
+}
+
 export async function loadTradingContext(
   uid: string,
   options?: LoadTradingContextOptions,
@@ -279,12 +337,31 @@ export async function loadTradingContext(
     lastChallengeActivatedAtMs: readTimestampMs(rawUser.lastChallengeActivatedAt),
   }
 
-  const activeAccountId =
+  const trimmedActiveAccountId =
     typeof userProfile.activeAccountId === "string"
       ? userProfile.activeAccountId.trim()
       : ""
 
-  if (!activeAccountId) {
+  let account: AccountData | null = null
+
+  if (trimmedActiveAccountId) {
+    const accountRef = doc(db, "accounts", trimmedActiveAccountId)
+    const accountSnap = await getDoc(accountRef)
+
+    if (accountSnap.exists()) {
+      account = mapAccountDoc(
+        accountSnap.id,
+        uid,
+        accountSnap.data() as Record<string, unknown>,
+      )
+    }
+  }
+
+  if (!account) {
+    account = await getFallbackAccountForUser(uid)
+  }
+
+  if (!account) {
     syncTradeAccountSnapshot(null)
     return {
       status: "no_active_account",
@@ -294,32 +371,13 @@ export async function loadTradingContext(
     }
   }
 
-  const accountRef = doc(db, "accounts", activeAccountId)
-  const accountSnap = await getDoc(accountRef)
-
-  if (!accountSnap.exists()) {
-    syncTradeAccountSnapshot(null)
-    return {
-      status: "account_not_found",
-      userProfile,
-      account: null,
-      trades: [],
-    }
-  }
-
-  const account = mapAccountDoc(
-    accountSnap.id,
-    uid,
-    accountSnap.data() as Record<string, unknown>,
-  )
-
   let trades: TradeRecord[] = []
 
   if (includeTrades) {
     const tradesSnap = await getDocs(
       query(
         collection(db, "trades"),
-        where("accountId", "==", activeAccountId),
+        where("accountId", "==", account.id),
         orderBy("createdAtMs", "desc"),
         limit(tradeLimit),
       ),
@@ -334,7 +392,10 @@ export async function loadTradingContext(
 
   return {
     status: "ready",
-    userProfile,
+    userProfile: {
+      ...userProfile,
+      activeAccountId: account.id,
+    },
     account,
     trades,
   }

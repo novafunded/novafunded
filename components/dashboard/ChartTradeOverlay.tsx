@@ -24,7 +24,7 @@ function clamp(value: number, min: number, max: number) {
 function getLineY(price: number, low: number, high: number) {
   const range = high - low || 1
   const raw = ((high - price) / range) * 100
-  return clamp(raw, 8, 92)
+  return clamp(raw, 7, 93)
 }
 
 export default function ChartTradeOverlay({
@@ -52,7 +52,7 @@ export default function ChartTradeOverlay({
             top: `${Math.min(entryY, takeY)}%`,
             height: `${Math.max(Math.abs(takeY - entryY), 0.7)}%`,
             background:
-              "linear-gradient(180deg, rgba(16,185,129,0.05) 0%, rgba(16,185,129,0.02) 100%)",
+              "linear-gradient(180deg, rgba(16,185,129,0.075) 0%, rgba(16,185,129,0.025) 100%)",
           }}
         />
       ) : null}
@@ -64,13 +64,13 @@ export default function ChartTradeOverlay({
             top: `${Math.min(entryY, stopY)}%`,
             height: `${Math.max(Math.abs(stopY - entryY), 0.7)}%`,
             background:
-              "linear-gradient(180deg, rgba(239,68,68,0.05) 0%, rgba(239,68,68,0.02) 100%)",
+              "linear-gradient(180deg, rgba(239,68,68,0.075) 0%, rgba(239,68,68,0.025) 100%)",
           }}
         />
       ) : null}
 
       <div
-        className="absolute left-0 right-0 border-t border-dashed border-cyan-300/70"
+        className="absolute left-0 right-0 border-t border-dashed border-cyan-300/75"
         style={{ top: `${entryY}%` }}
       />
 
@@ -81,19 +81,19 @@ export default function ChartTradeOverlay({
 
       {stopY !== null ? (
         <div
-          className="absolute left-0 right-0 border-t border-dashed border-red-300/70"
+          className="absolute left-0 right-0 border-t border-dashed border-red-300/75"
           style={{ top: `${stopY}%` }}
         />
       ) : null}
 
       {takeY !== null ? (
         <div
-          className="absolute left-0 right-0 border-t border-dashed border-emerald-300/70"
+          className="absolute left-0 right-0 border-t border-dashed border-emerald-300/75"
           style={{ top: `${takeY}%` }}
         />
       ) : null}
 
-      <div className="absolute inset-y-0 right-[8.4rem] w-px bg-white/[0.045]" />
+      <div className="absolute inset-y-0 right-[8.55rem] w-px bg-white/[0.04]" />
     </div>
   )
 }

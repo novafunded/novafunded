@@ -1,10 +1,30 @@
 "use client"
 
+import TradingViewChart from "@/components/dashboard/TradingViewChart"
+import ChartTradeOverlay from "@/components/dashboard/ChartTradeOverlay"
+
 export default function TradePage() {
   return (
-    <div className="p-6 text-white">
-      <h1 className="text-2xl font-semibold">Trade Terminal</h1>
-      <p className="mt-2 text-white/70">Trade page reset is working.</p>
+    <div className="p-4 space-y-4">
+      <h1 className="text-xl font-semibold text-white">Trade Terminal</h1>
+
+      <div className="relative h-[600px] w-full rounded-lg overflow-hidden border border-[#1c2940]">
+        <TradingViewChart symbol="BTCUSD" />
+
+        <ChartTradeOverlay
+          enabled
+          symbol="BTCUSD"
+          side="buy"
+          orderType="market"
+          livePrice={68000}
+          entry={68000}
+          stopLoss={67500}
+          takeProfit={69000}
+          chartLow={65000}
+          chartHigh={71000}
+          size={1}
+        />
+      </div>
     </div>
   )
 }

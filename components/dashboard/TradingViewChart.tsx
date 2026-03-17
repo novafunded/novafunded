@@ -49,35 +49,62 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
         hide_side_toolbar: false,
         hide_top_toolbar: false,
         allow_symbol_change: false,
-        withdateranges: true,
+        withdateranges: false,
         details: false,
         hotlist: false,
         calendar: false,
         studies: [],
-        toolbar_bg: "#0b1020",
-        loading_screen: { backgroundColor: "#0b1020", foregroundColor: "#22d3ee" },
+        toolbar_bg: "#08111b",
+        loading_screen: {
+          backgroundColor: "#050a11",
+          foregroundColor: "#8fb3d9",
+        },
         overrides: {
-          "paneProperties.background": "#0b1020",
-          "paneProperties.vertGridProperties.color": "rgba(255,255,255,0.05)",
-          "paneProperties.horzGridProperties.color": "rgba(255,255,255,0.05)",
-          "scalesProperties.textColor": "rgba(255,255,255,0.65)",
+          "paneProperties.background": "#050a11",
+          "paneProperties.backgroundType": "solid",
+          "paneProperties.vertGridProperties.color": "rgba(255,255,255,0.035)",
+          "paneProperties.horzGridProperties.color": "rgba(255,255,255,0.035)",
+          "paneProperties.crossHairProperties.color": "rgba(255,255,255,0.18)",
+          "paneProperties.crossHairProperties.width": 1,
+          "paneProperties.legendProperties.showLegend": true,
+          "paneProperties.legendProperties.showStudyArguments": false,
+          "paneProperties.legendProperties.showStudyTitles": false,
+          "paneProperties.legendProperties.showStudyValues": false,
+          "paneProperties.legendProperties.showSeriesTitle": true,
+          "paneProperties.legendProperties.showSeriesOHLC": true,
+          "paneProperties.legendProperties.showBarChange": false,
+          "scalesProperties.backgroundColor": "#050a11",
+          "scalesProperties.lineColor": "rgba(255,255,255,0.06)",
+          "scalesProperties.textColor": "rgba(221,230,238,0.62)",
+          "mainSeriesProperties.priceAxisProperties.autoScale": true,
           "mainSeriesProperties.candleStyle.upColor": "#10b981",
           "mainSeriesProperties.candleStyle.downColor": "#ef4444",
           "mainSeriesProperties.candleStyle.borderUpColor": "#10b981",
           "mainSeriesProperties.candleStyle.borderDownColor": "#ef4444",
           "mainSeriesProperties.candleStyle.wickUpColor": "#10b981",
           "mainSeriesProperties.candleStyle.wickDownColor": "#ef4444",
+          "mainSeriesProperties.candleStyle.drawWick": true,
+          "mainSeriesProperties.candleStyle.drawBorder": true,
+          "mainSeriesProperties.showCountdown": false,
+          "mainSeriesProperties.priceLineColor": "rgba(255,255,255,0.18)",
+          "mainSeriesProperties.priceLineWidth": 1,
+          "mainSeriesProperties.lastValueVisible": true,
         },
         enabled_features: [
           "header_resolutions",
           "header_chart_type",
           "header_indicators",
-          "header_compare",
           "header_screenshot",
           "show_interval_dialog_on_key_press",
           "side_toolbar_in_fullscreen_mode",
         ],
-        disabled_features: ["use_localstorage_for_settings"],
+        disabled_features: [
+          "use_localstorage_for_settings",
+          "header_symbol_search",
+          "header_compare",
+          "header_saveload",
+          "symbol_search_hot_key",
+        ],
         container_id: containerId,
       })
     }
@@ -86,7 +113,7 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
       createWidget()
     } else {
       const existingScript = document.querySelector(
-        'script[src="https://s3.tradingview.com/tv.js"]'
+        'script[src="https://s3.tradingview.com/tv.js"]',
       ) as HTMLScriptElement | null
 
       if (existingScript) {
@@ -115,7 +142,7 @@ export default function TradingViewChart({ symbol }: TradingViewChartProps) {
   }, [symbol, containerId])
 
   return (
-    <div className="relative h-[620px] w-full overflow-hidden rounded-[24px] pointer-events-auto">
+    <div className="relative h-[640px] w-full overflow-hidden rounded-none pointer-events-auto">
       <div ref={wrapperRef} className="h-full w-full pointer-events-auto" />
     </div>
   )

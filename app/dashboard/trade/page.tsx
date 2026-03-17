@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { onAuthStateChanged } from "firebase/auth"
 import TradingViewChart from "@/components/dashboard/TradingViewChart"
 import ChartTradeOverlay from "@/components/dashboard/ChartTradeOverlay"
@@ -121,6 +121,17 @@ function formatPrice(value: number, symbol: string) {
   if (symbol === "XAUUSD") return value.toFixed(1)
   if (symbol === "NAS100") return value.toFixed(1)
   return value.toFixed(0)
+}
+
+function formatMoney(value: number) {
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+function formatSignedMoney(value: number) {
+  return `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`
 }
 
 function getChartRange(values: number[], symbol: string) {
@@ -246,6 +257,90 @@ function getValidLimitEntry(side: OrderSide, livePrice: number, entry: number, s
   }
 
   return Math.max(roundToStep(entry, step), roundToStep(livePrice + minGap, step))
+}
+
+function Panel({
+  title,
+  subtitle,
+  right,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  right?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <section className="rounded-[18px] border border-white/10 bg-[#08111b] shadow-[0_10px_40px_rgba(0,0,0,0.28)]">
+      <div className="flex flex-col gap-3 border-b border-white/8 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#5c7389]">
+            {subtitle ?? "NovaFunded"}
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-white">{title}</h2>
+        </div>
+        {right ? <div>{right}</div> : null}
+      </div>
+      <div className="p-5">{children}</div>
+    </section>
+  )
+}
+
+function MetricCard({
+  label,
+  value,
+  tone = "default",
+  subtext,
+}: {
+  label: string
+  value: string
+  tone?: "default" | "positive" | "negative" | "accent"
+  subtext?: string
+}) {
+  const toneClass =
+    tone === "positive"
+      ? "text-emerald-300"
+      : tone === "negative"
+        ? "text-red-300"
+        : tone === "accent"
+          ? "text-cyan-300"
+          : "text-white"
+
+  return (
+    <div className="rounded-[14px] border border-white/8 bg-[#0b1623] px-4 py-3">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-[#6d8194]">{label}</p>
+      <p className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</p>
+      {subtext ? <p className="mt-1 text-xs text-white/40">{subtext}</p> : null}
+    </div>
+  )
+}
+
+function SegmentedButton({
+  active,
+  onClick,
+  disabled,
+  children,
+  activeClassName,
+}: {
+  active: boolean
+  onClick: () => void
+  disabled?: boolean
+  children: ReactNode
+  activeClassName?: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-[12px] border px-4 py-3 text-sm font-medium transition ${
+        active
+          ? activeClassName ?? "border-cyan-400/30 bg-cyan-500/10 text-cyan-300"
+          : "border-white/10 bg-[#0d1826] text-white/70 hover:border-white/15 hover:bg-white/[0.03] hover:text-white"
+      } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+    >
+      {children}
+    </button>
+  )
 }
 
 export default function TradePage() {
@@ -756,7 +851,7 @@ export default function TradePage() {
       }
       setLevelLocks((prev) => ({ ...prev, sl: false }))
     }
-  }, [useStopLoss, side, orderType, livePrice, previewEntry, symbolMeta])
+  }, [useStopLoss, side, orderType, livePrice, previewEntry, symbolMeta, stopLoss])
 
   useEffect(() => {
     if (!useTakeProfit) {
@@ -982,9 +1077,7 @@ export default function TradePage() {
 
     const currentEntry =
       dragEntryRef.current ??
-      (orderType === "market"
-        ? roundToStep(livePrice, symbolMeta.minMove)
-        : previewEntry)
+      (orderType === "market" ? roundToStep(livePrice, symbolMeta.minMove) : previewEntry)
 
     if (target === "entry") {
       if (orderType !== "limit" || levelLocks.entry) return
@@ -994,11 +1087,13 @@ export default function TradePage() {
       if (side === "buy") {
         nextEntry = Math.min(nextEntry, livePrice - minGap)
         if (useStopLoss && stopLoss !== null) nextEntry = Math.max(nextEntry, stopLoss + minGap)
-        if (useTakeProfit && takeProfit !== null) nextEntry = Math.min(nextEntry, takeProfit - minGap)
+        if (useTakeProfit && takeProfit !== null)
+          nextEntry = Math.min(nextEntry, takeProfit - minGap)
       } else {
         nextEntry = Math.max(nextEntry, livePrice + minGap)
         if (useStopLoss && stopLoss !== null) nextEntry = Math.min(nextEntry, stopLoss - minGap)
-        if (useTakeProfit && takeProfit !== null) nextEntry = Math.max(nextEntry, takeProfit + minGap)
+        if (useTakeProfit && takeProfit !== null)
+          nextEntry = Math.max(nextEntry, takeProfit + minGap)
       }
 
       setEntry(roundToStep(nextEntry, symbolMeta.minMove))
@@ -1053,7 +1148,19 @@ export default function TradePage() {
       window.removeEventListener("pointermove", onPointerMove)
       window.removeEventListener("pointerup", onPointerUp)
     }
-  }, [dragTarget, activeOverlayRange, symbolMeta.minMove, livePrice, previewEntry, orderType, side, levelLocks, useStopLoss, useTakeProfit, isBreached])
+  }, [
+    dragTarget,
+    activeOverlayRange,
+    symbolMeta.minMove,
+    livePrice,
+    previewEntry,
+    orderType,
+    side,
+    levelLocks,
+    useStopLoss,
+    useTakeProfit,
+    isBreached,
+  ])
 
   const targetProgress = clamp((Math.max(balance - startBalance, 0) / profitTarget) * 100, 0, 100)
 
@@ -1082,29 +1189,39 @@ export default function TradePage() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[1.45fr_0.75fr]">
-        <div className="rounded-[28px] border border-white/10 bg-[#08101d] p-5 shadow-2xl">
-          <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+      <div className="grid gap-6 xl:grid-cols-[1.55fr_0.82fr]">
+        <Panel
+          title="Trade Terminal"
+          subtitle="Execution"
+          right={
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-full border border-emerald-400/20 bg-emerald-500/8 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-emerald-300">
+                {accountData?.planName ?? "Live Account"}
+              </div>
+              <div className="rounded-full border border-white/10 bg-[#0d1826] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-white/60">
+                {symbol}
+              </div>
+            </div>
+          }
+        >
+          <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-emerald-400/70">
-                NovaFunded
-              </p>
-              <h1 className="mt-2 text-3xl font-semibold text-white">Trade Terminal</h1>
-              <p className="mt-2 text-sm text-white/50">
-                Stable levels, safer trade math, valid limit behavior.
+              <p className="text-sm text-white/55">
+                Minimal execution layout with active breach controls and existing account logic.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
-              {Object.entries(SYMBOLS).map(([key]) => (
+              {Object.entries(SYMBOLS).map(([key, meta]) => (
                 <button
                   key={key}
                   onClick={() => handleSymbolChange(key as keyof typeof SYMBOLS)}
-                  className={`rounded-2xl border px-4 py-2 text-sm transition ${
+                  className={`rounded-[12px] border px-3.5 py-2 text-sm font-medium transition ${
                     symbol === key
-                      ? "border-cyan-400/30 bg-cyan-400/15 text-cyan-300"
-                      : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                      ? "border-cyan-400/25 bg-cyan-500/10 text-cyan-300"
+                      : "border-white/10 bg-[#0d1826] text-white/65 hover:border-white/15 hover:bg-white/[0.03] hover:text-white"
                   }`}
+                  title={meta.label}
                 >
                   {key}
                 </button>
@@ -1114,8 +1231,29 @@ export default function TradePage() {
 
           <div
             ref={chartRef}
-            className="relative overflow-hidden rounded-[24px] border border-white/10 bg-black/20"
+            className="relative overflow-hidden rounded-[16px] border border-white/10 bg-[#050a11]"
           >
+            <div className="flex items-center justify-between border-b border-white/8 px-4 py-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-[#698095]">
+                  {symbolMeta.label}
+                </p>
+                <p className="mt-1 text-sm text-white/65">
+                  {orderType === "market" ? "Market execution" : "Limit execution"} ·{" "}
+                  {side === "buy" ? "Long bias" : "Short bias"}
+                </p>
+              </div>
+
+              <div className="text-right">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-[#698095]">
+                  Live price
+                </p>
+                <p className="mt-1 font-mono text-lg font-semibold text-white">
+                  {formatPrice(livePrice, symbol)}
+                </p>
+              </div>
+            </div>
+
             <TradingViewChart symbol={symbol} />
 
             <ChartTradeOverlay
@@ -1132,9 +1270,9 @@ export default function TradePage() {
               size={size}
             />
 
-            <div className="pointer-events-none absolute inset-y-0 right-0 z-20 w-28">
+            <div className="pointer-events-none absolute inset-y-0 right-0 z-20 w-36">
               <div
-                className="pointer-events-auto absolute right-2 top-0 -translate-y-1/2"
+                className="pointer-events-auto absolute right-3 top-0 -translate-y-1/2"
                 style={{ top: `${labelY.entry}%` }}
               >
                 <button
@@ -1147,21 +1285,21 @@ export default function TradePage() {
                       setDragTarget("entry")
                     }
                   }}
-                  className={`touch-none rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
+                  className={`touch-none rounded-[10px] border px-3 py-1.5 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
                     orderType === "market"
-                      ? "border border-cyan-400/25 bg-cyan-500/10 text-cyan-300/80"
+                      ? "border-cyan-400/20 bg-[#0b1b2b]/95 text-cyan-300"
                       : levelLocks.entry
-                        ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-300"
-                        : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
+                        ? "border-cyan-400/25 bg-[#0b1b2b]/95 text-cyan-300"
+                        : "border-amber-400/25 bg-[#23190a]/95 text-amber-300"
                   }`}
                 >
-                  Entry {formatPrice(previewEntry, symbol)}
+                  ENTRY {formatPrice(previewEntry, symbol)}
                 </button>
               </div>
 
               {useTakeProfit && takeProfit !== null && labelY.tp !== null ? (
                 <div
-                  className="pointer-events-auto absolute right-2 top-0 -translate-y-1/2"
+                  className="pointer-events-auto absolute right-3 top-0 -translate-y-1/2"
                   style={{ top: `${labelY.tp}%` }}
                 >
                   <button
@@ -1174,10 +1312,10 @@ export default function TradePage() {
                         setDragTarget("tp")
                       }
                     }}
-                    className={`touch-none rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
+                    className={`touch-none rounded-[10px] border px-3 py-1.5 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
                       levelLocks.tp
-                        ? "border border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
-                        : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
+                        ? "border-emerald-400/25 bg-[#0b1d18]/95 text-emerald-300"
+                        : "border-amber-400/25 bg-[#23190a]/95 text-amber-300"
                     }`}
                   >
                     TP {formatPrice(takeProfit, symbol)}
@@ -1187,7 +1325,7 @@ export default function TradePage() {
 
               {useStopLoss && stopLoss !== null && labelY.sl !== null ? (
                 <div
-                  className="pointer-events-auto absolute right-2 top-0 -translate-y-1/2"
+                  className="pointer-events-auto absolute right-3 top-0 -translate-y-1/2"
                   style={{ top: `${labelY.sl}%` }}
                 >
                   <button
@@ -1200,10 +1338,10 @@ export default function TradePage() {
                         setDragTarget("sl")
                       }
                     }}
-                    className={`touch-none rounded-full px-3 py-1 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
+                    className={`touch-none rounded-[10px] border px-3 py-1.5 text-[11px] font-medium shadow-lg backdrop-blur-sm ${
                       levelLocks.sl
-                        ? "border border-red-400/40 bg-red-500/15 text-red-300"
-                        : "border border-amber-400/40 bg-amber-500/15 text-amber-300"
+                        ? "border-red-400/25 bg-[#220d12]/95 text-red-300"
+                        : "border-amber-400/25 bg-[#23190a]/95 text-amber-300"
                     }`}
                   >
                     SL {formatPrice(stopLoss, symbol)}
@@ -1213,24 +1351,24 @@ export default function TradePage() {
             </div>
 
             {isBreached ? (
-              <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/65 backdrop-blur-[2px]">
-                <div className="w-full max-w-md rounded-[26px] border border-red-400/20 bg-[#0f1118] p-6 text-center shadow-2xl">
-                  <p className="text-xs uppercase tracking-[0.22em] text-red-300/70">
+              <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#03070dcc]/80 backdrop-blur-[3px]">
+                <div className="w-full max-w-md rounded-[18px] border border-red-400/15 bg-[#0a0f17] p-6 text-center shadow-2xl">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-red-300/75">
                     Account breached
                   </p>
-                  <h2 className="mt-2 text-2xl font-semibold text-white">Trading is locked</h2>
+                  <h2 className="mt-2 text-2xl font-semibold text-white">Trading locked</h2>
                   <p className="mt-2 text-sm text-white/55">
-                    This account can’t place new trades. Send users to checkout to buy another challenge.
+                    This account can’t place new trades. Purchase another challenge to continue.
                   </p>
 
                   <div className="mt-5 grid grid-cols-2 gap-3">
                     <a
                       href="/checkout"
-                      className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-black transition hover:bg-emerald-400"
+                      className="rounded-[12px] bg-emerald-500 px-4 py-3 text-sm font-semibold text-black transition hover:bg-emerald-400"
                     >
                       Buy New Account
                     </a>
-                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">
+                    <div className="rounded-[12px] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm font-semibold text-white/40">
                       Reset Disabled
                     </div>
                   </div>
@@ -1239,145 +1377,131 @@ export default function TradePage() {
             ) : null}
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <p className="text-xs text-white/45">Open</p>
-              <p className="mt-2 text-2xl font-semibold text-white">{openTrades.length}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <p className="text-xs text-white/45">Pending</p>
-              <p className="mt-2 text-2xl font-semibold text-white">{pendingTrades.length}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <p className="text-xs text-white/45">Closed</p>
-              <p className="mt-2 text-2xl font-semibold text-white">{closedTrades.length}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <p className="text-xs text-white/45">Live Price</p>
-              <p className="mt-2 text-2xl font-semibold text-cyan-300">
-                {formatPrice(livePrice, symbol)}
-              </p>
-            </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Open positions" value={String(openTrades.length)} />
+            <MetricCard label="Pending orders" value={String(pendingTrades.length)} />
+            <MetricCard label="Closed trades" value={String(closedTrades.length)} />
+            <MetricCard
+              label="Live price"
+              value={formatPrice(livePrice, symbol)}
+              tone="accent"
+              subtext={symbolMeta.label}
+            />
           </div>
-        </div>
+        </Panel>
 
         <div className="space-y-6">
-          <div className="rounded-[28px] border border-white/10 bg-[#08101d] p-5 shadow-2xl">
-            <div className="mb-5 flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-emerald-400/70">
-                  Order Ticket
-                </p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Place Trade</h2>
-              </div>
-
+          <Panel
+            title="Order Ticket"
+            subtitle="Execution controls"
+            right={
               <div
-                className={`rounded-full border px-3 py-1 text-xs ${
+                className={`rounded-full border px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] ${
                   isBreached
-                    ? "border-red-400/20 bg-red-500/10 text-red-300"
+                    ? "border-red-400/15 bg-red-500/8 text-red-300"
                     : isPassed
-                      ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
-                      : "border-white/10 bg-white/5 text-white/70"
+                      ? "border-emerald-400/15 bg-emerald-500/8 text-emerald-300"
+                      : "border-white/10 bg-[#0d1826] text-white/60"
                 }`}
               >
                 {isBreached ? "Breached" : isPassed ? "Passed" : "On Track"}
               </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => handleSideChange("buy")}
-                disabled={isBreached}
-                className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                  side === "buy"
-                    ? "bg-emerald-500 text-black"
-                    : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
-                } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                Buy
-              </button>
-              <button
-                onClick={() => handleSideChange("sell")}
-                disabled={isBreached}
-                className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                  side === "sell"
-                    ? "bg-red-500 text-white"
-                    : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
-                } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                Sell
-              </button>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <button
-                onClick={() => handleOrderTypeChange("market")}
-                disabled={isBreached}
-                className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                  orderType === "market"
-                    ? "border border-cyan-400/30 bg-cyan-400/15 text-cyan-300"
-                    : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
-                } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                Market
-              </button>
-              <button
-                onClick={() => handleOrderTypeChange("limit")}
-                disabled={isBreached}
-                className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                  orderType === "limit"
-                    ? "border border-cyan-400/30 bg-cyan-400/15 text-cyan-300"
-                    : "border border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
-                } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                Limit
-              </button>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <button
-                onClick={() => setUseTakeProfit((prev) => !prev)}
-                disabled={isBreached}
-                className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                  useTakeProfit
-                    ? "border border-emerald-400/30 bg-emerald-500/15 text-emerald-300"
-                    : "border border-white/10 bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
-                } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                {useTakeProfit ? "TP Enabled" : "Enable TP"}
-              </button>
-
-              <button
-                onClick={() => setUseStopLoss((prev) => !prev)}
-                disabled={isBreached}
-                className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                  useStopLoss
-                    ? "border border-red-400/30 bg-red-500/15 text-red-300"
-                    : "border border-white/10 bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
-                } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                {useStopLoss ? "SL Enabled" : "Enable SL"}
-              </button>
-            </div>
-
-            <div className="mt-5 space-y-3">
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-white/45">Size</span>
-                  <span className="text-sm text-white">
-                    {size} / max {symbolMeta.maxSize}
-                  </span>
+            }
+          >
+            <div className="space-y-5">
+              <div>
+                <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                  Direction
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <SegmentedButton
+                    active={side === "buy"}
+                    onClick={() => handleSideChange("buy")}
+                    disabled={isBreached}
+                    activeClassName="border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+                  >
+                    Buy
+                  </SegmentedButton>
+                  <SegmentedButton
+                    active={side === "sell"}
+                    onClick={() => handleSideChange("sell")}
+                    disabled={isBreached}
+                    activeClassName="border-red-400/20 bg-red-500/10 text-red-300"
+                  >
+                    Sell
+                  </SegmentedButton>
                 </div>
-                <div className="mt-3 grid grid-cols-4 gap-2">
+              </div>
+
+              <div>
+                <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                  Order type
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <SegmentedButton
+                    active={orderType === "market"}
+                    onClick={() => handleOrderTypeChange("market")}
+                    disabled={isBreached}
+                  >
+                    Market
+                  </SegmentedButton>
+                  <SegmentedButton
+                    active={orderType === "limit"}
+                    onClick={() => handleOrderTypeChange("limit")}
+                    disabled={isBreached}
+                  >
+                    Limit
+                  </SegmentedButton>
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                  Protection
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <SegmentedButton
+                    active={useTakeProfit}
+                    onClick={() => setUseTakeProfit((prev) => !prev)}
+                    disabled={isBreached}
+                    activeClassName="border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+                  >
+                    {useTakeProfit ? "TP Enabled" : "Enable TP"}
+                  </SegmentedButton>
+
+                  <SegmentedButton
+                    active={useStopLoss}
+                    onClick={() => setUseStopLoss((prev) => !prev)}
+                    disabled={isBreached}
+                    activeClassName="border-red-400/20 bg-red-500/10 text-red-300"
+                  >
+                    {useStopLoss ? "SL Enabled" : "Enable SL"}
+                  </SegmentedButton>
+                </div>
+              </div>
+
+              <div className="rounded-[14px] border border-white/8 bg-[#0b1623] p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                      Position size
+                    </p>
+                    <p className="mt-2 text-2xl font-semibold text-white">{size}</p>
+                  </div>
+                  <div className="text-right text-xs text-white/45">
+                    <p>Maximum</p>
+                    <p className="mt-1 text-sm text-white">{symbolMeta.maxSize}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-4 gap-2">
                   {[-5, -1, 1, 5].map((value) => (
                     <button
                       key={value}
-                      onClick={() =>
-                        setSize((prev) => clamp(prev + value, 1, symbolMeta.maxSize))
-                      }
+                      onClick={() => setSize((prev) => clamp(prev + value, 1, symbolMeta.maxSize))}
                       disabled={isBreached}
-                      className={`rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/75 transition hover:bg-white/10 hover:text-white ${
-                        isBreached ? "cursor-not-allowed opacity-60" : ""
+                      className={`rounded-[10px] border border-white/10 bg-[#0d1826] px-3 py-2.5 text-sm font-medium text-white/75 transition hover:border-white/15 hover:bg-white/[0.03] hover:text-white ${
+                        isBreached ? "cursor-not-allowed opacity-50" : ""
                       }`}
                     >
                       {value > 0 ? `+${value}` : value}
@@ -1388,24 +1512,26 @@ export default function TradePage() {
                 {riskPerTrade !== null ? (
                   <p className="mt-3 text-xs text-white/45">
                     Estimated max loss at SL:{" "}
-                    <span className="text-white">${riskPerTrade.toFixed(2)}</span>
+                    <span className="font-medium text-white">{formatMoney(riskPerTrade)}</span>
                   </p>
                 ) : null}
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="rounded-[14px] border border-white/8 bg-[#0b1623] p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-xs text-white/45">Entry</p>
-                      <p className="mt-2 text-lg font-semibold text-cyan-300">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                        Entry
+                      </p>
+                      <p className="mt-2 font-mono text-xl font-semibold text-cyan-300">
                         {formatPrice(previewEntry, symbol)}
                       </p>
-                      <p className="mt-1 text-[11px] text-white/35">
+                      <p className="mt-1 text-xs text-white/40">
                         {orderType === "market"
-                          ? "Tracks live price"
+                          ? "Tracking live price"
                           : levelLocks.entry
-                            ? "Locked"
+                            ? "Locked and ready"
                             : "Drag on chart, then lock"}
                       </p>
                     </div>
@@ -1414,40 +1540,44 @@ export default function TradePage() {
                       <button
                         onClick={lockEntry}
                         disabled={levelLocks.entry || isBreached}
-                        className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                        className={`rounded-[10px] border px-3 py-2 text-xs font-semibold transition ${
                           levelLocks.entry
-                            ? "cursor-not-allowed border border-cyan-400/30 bg-cyan-500/10 text-cyan-300"
-                            : "border border-cyan-400/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/15"
-                        } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
+                            ? "border-cyan-400/20 bg-cyan-500/10 text-cyan-300"
+                            : "border-cyan-400/20 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/15"
+                        } ${isBreached ? "cursor-not-allowed opacity-50" : ""}`}
                       >
-                        {levelLocks.entry ? "Locked" : "Lock Entry"}
+                        {levelLocks.entry ? "Locked" : "Lock"}
                       </button>
                     ) : null}
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/45">Live Price</p>
-                  <p className="mt-2 text-lg font-semibold text-white">
+                <div className="rounded-[14px] border border-white/8 bg-[#0b1623] p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                    Live price
+                  </p>
+                  <p className="mt-2 font-mono text-xl font-semibold text-white">
                     {formatPrice(livePrice, symbol)}
                   </p>
-                  <p className="mt-1 text-[11px] text-white/35">{symbolMeta.label}</p>
+                  <p className="mt-1 text-xs text-white/40">{symbolMeta.label}</p>
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="rounded-[14px] border border-white/8 bg-[#0b1623] p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-xs text-white/45">Take Profit</p>
-                      <p className="mt-2 text-lg font-semibold text-emerald-300">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                        Take profit
+                      </p>
+                      <p className="mt-2 font-mono text-xl font-semibold text-emerald-300">
                         {useTakeProfit && takeProfit !== null
                           ? formatPrice(takeProfit, symbol)
                           : "Disabled"}
                       </p>
-                      <p className="mt-1 text-[11px] text-white/35">
+                      <p className="mt-1 text-xs text-white/40">
                         {!useTakeProfit
                           ? "Disabled"
                           : levelLocks.tp
-                            ? "Locked"
+                            ? "Locked and ready"
                             : "Drag on chart, then lock"}
                       </p>
                     </div>
@@ -1456,32 +1586,34 @@ export default function TradePage() {
                       <button
                         onClick={lockTp}
                         disabled={levelLocks.tp || isBreached}
-                        className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                        className={`rounded-[10px] border px-3 py-2 text-xs font-semibold transition ${
                           levelLocks.tp
-                            ? "cursor-not-allowed border border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
-                            : "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15"
-                        } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
+                            ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+                            : "border-emerald-400/20 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15"
+                        } ${isBreached ? "cursor-not-allowed opacity-50" : ""}`}
                       >
-                        {levelLocks.tp ? "Locked" : "Lock TP"}
+                        {levelLocks.tp ? "Locked" : "Lock"}
                       </button>
                     ) : null}
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="rounded-[14px] border border-white/8 bg-[#0b1623] p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-xs text-white/45">Stop Loss</p>
-                      <p className="mt-2 text-lg font-semibold text-red-300">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                        Stop loss
+                      </p>
+                      <p className="mt-2 font-mono text-xl font-semibold text-red-300">
                         {useStopLoss && stopLoss !== null
                           ? formatPrice(stopLoss, symbol)
                           : "Disabled"}
                       </p>
-                      <p className="mt-1 text-[11px] text-white/35">
+                      <p className="mt-1 text-xs text-white/40">
                         {!useStopLoss
                           ? "Disabled"
                           : levelLocks.sl
-                            ? "Locked"
+                            ? "Locked and ready"
                             : "Drag on chart, then lock"}
                       </p>
                     </div>
@@ -1490,13 +1622,13 @@ export default function TradePage() {
                       <button
                         onClick={lockSl}
                         disabled={levelLocks.sl || isBreached}
-                        className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                        className={`rounded-[10px] border px-3 py-2 text-xs font-semibold transition ${
                           levelLocks.sl
-                            ? "cursor-not-allowed border border-red-400/30 bg-red-500/10 text-red-300"
-                            : "border border-red-400/30 bg-red-500/10 text-red-300 hover:bg-red-500/15"
-                        } ${isBreached ? "cursor-not-allowed opacity-60" : ""}`}
+                            ? "border-red-400/20 bg-red-500/10 text-red-300"
+                            : "border-red-400/20 bg-red-500/10 text-red-300 hover:bg-red-500/15"
+                        } ${isBreached ? "cursor-not-allowed opacity-50" : ""}`}
                       >
-                        {levelLocks.sl ? "Locked" : "Lock SL"}
+                        {levelLocks.sl ? "Locked" : "Lock"}
                       </button>
                     ) : null}
                   </div>
@@ -1504,67 +1636,73 @@ export default function TradePage() {
               </div>
 
               {orderType === "limit" ? (
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs uppercase tracking-[0.2em] text-white/45">Limit workflow</p>
-                  <div className="mt-3 grid grid-cols-4 gap-2 text-center text-xs">
+                <div className="rounded-[14px] border border-white/8 bg-[#0b1623] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-[#6f8497]">
+                        Limit workflow
+                      </p>
+                      <p className="mt-1 text-sm text-white/55">
+                        Lock all active levels before confirming the order.
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={unlockAllLevels}
+                      disabled={isBreached}
+                      className={`rounded-[10px] border border-white/10 bg-[#0d1826] px-3 py-2 text-sm font-medium text-white/75 transition hover:border-white/15 hover:bg-white/[0.03] hover:text-white ${
+                        isBreached ? "cursor-not-allowed opacity-50" : ""
+                      }`}
+                    >
+                      Edit Levels
+                    </button>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-4 gap-2 text-center text-[11px] uppercase tracking-[0.12em]">
                     <div
-                      className={`rounded-xl px-3 py-2 ${
-                        levelLocks.entry
-                          ? "bg-cyan-500/15 text-cyan-300"
-                          : "bg-white/5 text-white/45"
+                      className={`rounded-[10px] px-3 py-2 ${
+                        levelLocks.entry ? "bg-cyan-500/10 text-cyan-300" : "bg-white/[0.03] text-white/40"
                       }`}
                     >
                       Entry
                     </div>
                     <div
-                      className={`rounded-xl px-3 py-2 ${
+                      className={`rounded-[10px] px-3 py-2 ${
                         !useTakeProfit || levelLocks.tp
-                          ? "bg-emerald-500/15 text-emerald-300"
-                          : "bg-white/5 text-white/45"
+                          ? "bg-emerald-500/10 text-emerald-300"
+                          : "bg-white/[0.03] text-white/40"
                       }`}
                     >
                       TP
                     </div>
                     <div
-                      className={`rounded-xl px-3 py-2 ${
+                      className={`rounded-[10px] px-3 py-2 ${
                         !useStopLoss || levelLocks.sl
-                          ? "bg-red-500/15 text-red-300"
-                          : "bg-white/5 text-white/45"
+                          ? "bg-red-500/10 text-red-300"
+                          : "bg-white/[0.03] text-white/40"
                       }`}
                     >
                       SL
                     </div>
                     <div
-                      className={`rounded-xl px-3 py-2 ${
-                        limitReady
-                          ? "bg-amber-500/15 text-amber-300"
-                          : "bg-white/5 text-white/45"
+                      className={`rounded-[10px] px-3 py-2 ${
+                        limitReady ? "bg-amber-500/10 text-amber-300" : "bg-white/[0.03] text-white/40"
                       }`}
                     >
-                      Confirm
+                      Ready
                     </div>
                   </div>
-
-                  <button
-                    onClick={unlockAllLevels}
-                    disabled={isBreached}
-                    className={`mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white/75 transition hover:bg-white/10 hover:text-white ${
-                      isBreached ? "cursor-not-allowed opacity-60" : ""
-                    }`}
-                  >
-                    Edit Levels
-                  </button>
                 </div>
               ) : null}
 
               <button
                 onClick={placeTrade}
                 disabled={isBreached || !limitReady}
-                className={`w-full rounded-2xl px-4 py-4 text-sm font-semibold transition ${
+                className={`w-full rounded-[14px] px-4 py-4 text-sm font-semibold transition ${
                   isBreached
-                    ? "cursor-not-allowed border border-red-400/20 bg-red-500/10 text-red-300"
+                    ? "cursor-not-allowed border border-red-400/15 bg-red-500/8 text-red-300"
                     : !limitReady
-                      ? "cursor-not-allowed border border-amber-400/20 bg-amber-500/10 text-amber-300"
+                      ? "cursor-not-allowed border border-amber-400/15 bg-amber-500/8 text-amber-300"
                       : side === "buy"
                         ? "bg-emerald-500 text-black hover:bg-emerald-400"
                         : "bg-red-500 text-white hover:bg-red-400"
@@ -1579,264 +1717,226 @@ export default function TradePage() {
                       : "Lock Entry / TP / SL First"}
               </button>
             </div>
-          </div>
+          </Panel>
 
-          <div className="rounded-[28px] border border-white/10 bg-[#08101d] p-5 shadow-2xl">
-            <p className="text-xs uppercase tracking-[0.24em] text-emerald-400/70">
-              Account Snapshot
-            </p>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-xs text-white/45">Balance</p>
-                <p className="mt-2 text-2xl font-semibold text-white">
-                  $
-                  {balance.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
+          <Panel title="Account Snapshot" subtitle="Risk and progress">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <MetricCard label="Balance" value={formatMoney(balance)} />
+              <MetricCard label="Equity" value={formatMoney(equity)} />
+              <MetricCard
+                label="Net PnL"
+                value={formatSignedMoney(netPnl)}
+                tone={netPnl >= 0 ? "positive" : "negative"}
+              />
+              <MetricCard
+                label="Drawdown left"
+                value={formatMoney(drawdownLeft)}
+                tone={drawdownLeft > 0 ? "default" : "negative"}
+              />
+              <MetricCard
+                label="Daily loss left"
+                value={formatMoney(dailyLossLeft)}
+                tone={dailyLossLeft > 0 ? "default" : "negative"}
+              />
+              <div className="rounded-[14px] border border-white/8 bg-[#0b1623] px-4 py-3">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-[#6d8194]">
+                  Target progress
                 </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-xs text-white/45">Equity</p>
-                <p className="mt-2 text-2xl font-semibold text-white">
-                  $
-                  {equity.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-xs text-white/45">Net PnL</p>
-                <p
-                  className={`mt-2 text-2xl font-semibold ${
-                    netPnl >= 0 ? "text-emerald-300" : "text-red-300"
-                  }`}
-                >
-                  {netPnl >= 0 ? "+" : ""}${netPnl.toFixed(2)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-xs text-white/45">Drawdown Left</p>
-                <p
-                  className={`mt-2 text-2xl font-semibold ${
-                    drawdownLeft > 0 ? "text-white" : "text-red-300"
-                  }`}
-                >
-                  ${drawdownLeft.toFixed(2)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-xs text-white/45">Daily Loss Left</p>
-                <p
-                  className={`mt-2 text-2xl font-semibold ${
-                    dailyLossLeft > 0 ? "text-white" : "text-red-300"
-                  }`}
-                >
-                  ${dailyLossLeft.toFixed(2)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-xs text-white/45">Target Progress</p>
                 <p className="mt-2 text-2xl font-semibold text-white">
                   {targetProgress.toFixed(0)}%
                 </p>
-                <div className="mt-3 h-2 rounded-full bg-white/10">
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/8">
                   <div
-                    className="h-2 rounded-full bg-emerald-400 transition-all"
+                    className="h-full rounded-full bg-emerald-400 transition-all"
                     style={{ width: `${targetProgress}%` }}
                   />
                 </div>
               </div>
             </div>
-          </div>
+          </Panel>
         </div>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <div className="rounded-[28px] border border-white/10 bg-[#08101d] p-5 shadow-2xl">
-          <div className="mb-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-emerald-400/70">
-              Open + Pending
-            </p>
-            <h3 className="mt-2 text-xl font-semibold text-white">Trade Queue</h3>
-          </div>
+        <Panel title="Trade Queue" subtitle="Open and pending">
+          <div className="overflow-hidden rounded-[14px] border border-white/8 bg-[#0b1623]">
+            <div className="hidden grid-cols-[1.1fr_0.8fr_0.8fr_0.8fr_0.8fr_0.8fr_auto] gap-3 border-b border-white/8 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-[#6d8194] md:grid">
+              <div>Instrument</div>
+              <div>Status</div>
+              <div>Entry</div>
+              <div>TP</div>
+              <div>SL</div>
+              <div>PnL</div>
+              <div>Action</div>
+            </div>
 
-          <div className="space-y-3">
             {[...openTrades, ...pendingTrades].length === 0 ? (
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-5 text-sm text-white/50">
-                No open or pending trades yet.
-              </div>
+              <div className="px-4 py-8 text-sm text-white/45">No open or pending trades yet.</div>
             ) : (
-              [...openTrades, ...pendingTrades].map((trade) => (
-                <div
-                  key={trade.id}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-white">{trade.symbol}</span>
-                        <span
-                          className={`rounded-full px-2 py-1 text-[10px] uppercase ${
-                            trade.side === "buy"
-                              ? "bg-emerald-500/15 text-emerald-300"
-                              : "bg-red-500/15 text-red-300"
-                          }`}
-                        >
-                          {trade.side}
-                        </span>
-                        <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] uppercase text-white/50">
-                          {trade.status}
-                        </span>
-                      </div>
+              <div className="divide-y divide-white/8">
+                {[...openTrades, ...pendingTrades].map((trade) => {
+                  const displayPnl =
+                    trade.status === "open" ? computePnl(trade, livePrice) : trade.pnl
 
-                      <p className="mt-2 text-xs text-white/45">
-                        {trade.orderType} • size {trade.size}
-                      </p>
-
-                      <div className="mt-3 grid grid-cols-2 gap-3 text-sm text-white/70">
+                  return (
+                    <div key={trade.id} className="px-4 py-4">
+                      <div className="grid gap-3 md:grid-cols-[1.1fr_0.8fr_0.8fr_0.8fr_0.8fr_0.8fr_auto] md:items-center">
                         <div>
-                          Entry: {formatPrice(trade.entry ?? trade.requestedEntry, trade.symbol)}
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold text-white">{trade.symbol}</span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${
+                                trade.side === "buy"
+                                  ? "bg-emerald-500/10 text-emerald-300"
+                                  : "bg-red-500/10 text-red-300"
+                              }`}
+                            >
+                              {trade.side}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-white/40">
+                            {trade.orderType} · size {trade.size}
+                          </p>
                         </div>
+
                         <div>
-                          TP:{" "}
+                          <span className="rounded-full bg-white/[0.04] px-2 py-1 text-[10px] uppercase text-white/60">
+                            {trade.status}
+                          </span>
+                        </div>
+
+                        <div className="text-sm text-white/75">
+                          {formatPrice(trade.entry ?? trade.requestedEntry, trade.symbol)}
+                        </div>
+
+                        <div className="text-sm text-white/75">
                           {trade.takeProfit !== null
                             ? formatPrice(trade.takeProfit, trade.symbol)
-                            : "Disabled"}
+                            : "—"}
                         </div>
-                        <div>
-                          SL:{" "}
+
+                        <div className="text-sm text-white/75">
                           {trade.stopLoss !== null
                             ? formatPrice(trade.stopLoss, trade.symbol)
-                            : "Disabled"}
+                            : "—"}
                         </div>
+
                         <div
-                          className={
-                            (trade.status === "open" ? computePnl(trade, livePrice) : trade.pnl) >= 0
-                              ? "text-emerald-300"
-                              : "text-red-300"
-                          }
+                          className={`text-sm font-semibold ${
+                            displayPnl >= 0 ? "text-emerald-300" : "text-red-300"
+                          }`}
                         >
-                          {(() => {
-                            const displayPnl =
-                              trade.status === "open" ? computePnl(trade, livePrice) : trade.pnl
-                            return <>PnL: {displayPnl >= 0 ? "+" : ""}${displayPnl.toFixed(2)}</>
-                          })()}
+                          {formatSignedMoney(displayPnl)}
+                        </div>
+
+                        <div className="md:text-right">
+                          {trade.status === "open" ? (
+                            <button
+                              onClick={() => closeTradeManually(trade.id)}
+                              disabled={isBreached}
+                              className={`rounded-[10px] border border-red-400/15 bg-red-500/8 px-3 py-2 text-sm font-medium text-red-300 transition hover:bg-red-500/12 ${
+                                isBreached ? "cursor-not-allowed opacity-50" : ""
+                              }`}
+                            >
+                              Close
+                            </button>
+                          ) : trade.status === "pending" ? (
+                            <button
+                              onClick={() => cancelPendingTrade(trade.id)}
+                              disabled={isBreached}
+                              className={`rounded-[10px] border border-white/10 bg-[#0d1826] px-3 py-2 text-sm font-medium text-white/75 transition hover:border-white/15 hover:bg-white/[0.03] hover:text-white ${
+                                isBreached ? "cursor-not-allowed opacity-50" : ""
+                              }`}
+                            >
+                              Cancel
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     </div>
-
-                    {trade.status === "open" ? (
-                      <button
-                        onClick={() => closeTradeManually(trade.id)}
-                        disabled={isBreached}
-                        className={`rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-300 transition hover:bg-red-500/15 ${
-                          isBreached ? "cursor-not-allowed opacity-60" : ""
-                        }`}
-                      >
-                        Close
-                      </button>
-                    ) : trade.status === "pending" ? (
-                      <button
-                        onClick={() => cancelPendingTrade(trade.id)}
-                        disabled={isBreached}
-                        className={`rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white/80 transition hover:bg-white/10 hover:text-white ${
-                          isBreached ? "cursor-not-allowed opacity-60" : ""
-                        }`}
-                      >
-                        Cancel
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ))
+                  )
+                })}
+              </div>
             )}
           </div>
-        </div>
+        </Panel>
 
-        <div className="rounded-[28px] border border-white/10 bg-[#08101d] p-5 shadow-2xl">
-          <div className="mb-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-emerald-400/70">
-              Trade History
-            </p>
-            <h3 className="mt-2 text-xl font-semibold text-white">Closed Trades</h3>
-          </div>
+        <Panel title="Closed Trades" subtitle="History">
+          <div className="overflow-hidden rounded-[14px] border border-white/8 bg-[#0b1623]">
+            <div className="hidden grid-cols-[1.1fr_0.8fr_0.8fr_0.8fr_0.8fr_0.8fr] gap-3 border-b border-white/8 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-[#6d8194] md:grid">
+              <div>Instrument</div>
+              <div>Reason</div>
+              <div>Entry</div>
+              <div>Exit</div>
+              <div>TP / SL</div>
+              <div>PnL</div>
+            </div>
 
-          <div className="space-y-3">
             {closedTrades.length === 0 ? (
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-5 text-sm text-white/50">
-                No closed trades yet.
-              </div>
+              <div className="px-4 py-8 text-sm text-white/45">No closed trades yet.</div>
             ) : (
-              closedTrades.map((trade) => (
-                <div
-                  key={trade.id}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-white">{trade.symbol}</span>
-                        <span
-                          className={`rounded-full px-2 py-1 text-[10px] uppercase ${
-                            trade.side === "buy"
-                              ? "bg-emerald-500/15 text-emerald-300"
-                              : "bg-red-500/15 text-red-300"
-                          }`}
-                        >
-                          {trade.side}
-                        </span>
-                        <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] uppercase text-white/50">
+              <div className="divide-y divide-white/8">
+                {closedTrades.map((trade) => (
+                  <div key={trade.id} className="px-4 py-4">
+                    <div className="grid gap-3 md:grid-cols-[1.1fr_0.8fr_0.8fr_0.8fr_0.8fr_0.8fr] md:items-center">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-white">{trade.symbol}</span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${
+                              trade.side === "buy"
+                                ? "bg-emerald-500/10 text-emerald-300"
+                                : "bg-red-500/10 text-red-300"
+                            }`}
+                          >
+                            {trade.side}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-white/40">
+                          {trade.orderType} · size {trade.size}
+                        </p>
+                      </div>
+
+                      <div>
+                        <span className="rounded-full bg-white/[0.04] px-2 py-1 text-[10px] uppercase text-white/60">
                           {trade.closeReason ?? "closed"}
                         </span>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-2 gap-3 text-sm text-white/70">
-                        <div>
-                          Entry: {formatPrice(trade.entry ?? trade.requestedEntry, trade.symbol)}
-                        </div>
-                        <div>
-                          Exit:{" "}
-                          {formatPrice(
-                            trade.closePrice ?? (trade.entry ?? trade.requestedEntry),
-                            trade.symbol,
-                          )}
-                        </div>
-                        <div>
-                          TP:{" "}
-                          {trade.takeProfit !== null
-                            ? formatPrice(trade.takeProfit, trade.symbol)
-                            : "Disabled"}
-                        </div>
-                        <div>
-                          SL:{" "}
-                          {trade.stopLoss !== null
-                            ? formatPrice(trade.stopLoss, trade.symbol)
-                            : "Disabled"}
-                        </div>
+                      <div className="text-sm text-white/75">
+                        {formatPrice(trade.entry ?? trade.requestedEntry, trade.symbol)}
+                      </div>
+
+                      <div className="text-sm text-white/75">
+                        {formatPrice(
+                          trade.closePrice ?? (trade.entry ?? trade.requestedEntry),
+                          trade.symbol,
+                        )}
+                      </div>
+
+                      <div className="text-sm text-white/60">
+                        TP{" "}
+                        {trade.takeProfit !== null
+                          ? formatPrice(trade.takeProfit, trade.symbol)
+                          : "—"}{" "}
+                        / SL{" "}
+                        {trade.stopLoss !== null ? formatPrice(trade.stopLoss, trade.symbol) : "—"}
+                      </div>
+
+                      <div
+                        className={`text-sm font-semibold ${
+                          trade.pnl >= 0 ? "text-emerald-300" : "text-red-300"
+                        }`}
+                      >
+                        {formatSignedMoney(trade.pnl)}
                       </div>
                     </div>
-
-                    <div
-                      className={`text-right text-lg font-semibold ${
-                        trade.pnl >= 0 ? "text-emerald-300" : "text-red-300"
-                      }`}
-                    >
-                      {trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}
-                    </div>
                   </div>
-                </div>
-              ))
+                ))}
+              </div>
             )}
           </div>
-        </div>
+        </Panel>
       </div>
     </div>
   )

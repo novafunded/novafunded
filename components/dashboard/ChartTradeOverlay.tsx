@@ -47,26 +47,30 @@ export default function ChartTradeOverlay({
     <div className="pointer-events-none absolute inset-0 z-10">
       {takeY !== null ? (
         <div
-          className="absolute left-0 right-0 bg-emerald-500/10"
+          className="absolute left-0 right-0"
           style={{
             top: `${Math.min(entryY, takeY)}%`,
-            height: `${Math.max(Math.abs(takeY - entryY), 0.8)}%`,
+            height: `${Math.max(Math.abs(takeY - entryY), 0.7)}%`,
+            background:
+              "linear-gradient(180deg, rgba(16,185,129,0.05) 0%, rgba(16,185,129,0.02) 100%)",
           }}
         />
       ) : null}
 
       {stopY !== null ? (
         <div
-          className="absolute left-0 right-0 bg-red-500/10"
+          className="absolute left-0 right-0"
           style={{
             top: `${Math.min(entryY, stopY)}%`,
-            height: `${Math.max(Math.abs(stopY - entryY), 0.8)}%`,
+            height: `${Math.max(Math.abs(stopY - entryY), 0.7)}%`,
+            background:
+              "linear-gradient(180deg, rgba(239,68,68,0.05) 0%, rgba(239,68,68,0.02) 100%)",
           }}
         />
       ) : null}
 
       <div
-        className="absolute left-0 right-0 border-t border-dashed border-cyan-400/70"
+        className="absolute left-0 right-0 border-t border-dashed border-cyan-300/70"
         style={{ top: `${entryY}%` }}
       />
 
@@ -77,17 +81,19 @@ export default function ChartTradeOverlay({
 
       {stopY !== null ? (
         <div
-          className="absolute left-0 right-0 border-t border-dashed border-red-400/70"
+          className="absolute left-0 right-0 border-t border-dashed border-red-300/70"
           style={{ top: `${stopY}%` }}
         />
       ) : null}
 
       {takeY !== null ? (
         <div
-          className="absolute left-0 right-0 border-t border-dashed border-emerald-400/70"
+          className="absolute left-0 right-0 border-t border-dashed border-emerald-300/70"
           style={{ top: `${takeY}%` }}
         />
       ) : null}
+
+      <div className="absolute inset-y-0 right-[8.4rem] w-px bg-white/[0.045]" />
     </div>
   )
 }

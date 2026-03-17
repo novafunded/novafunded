@@ -34,7 +34,7 @@ export default function TournamentsPage() {
       try {
         const context = await loadTradingContext(user.uid, {
           includeTrades: true,
-          tradeLimit: 200,
+          tradeLimit: 300,
         })
 
         setContextStatus(context.status)
@@ -55,55 +55,61 @@ export default function TournamentsPage() {
 
   const eligible =
     !!account &&
-    !account.breached &&
-    metrics.closedTrades.length >= 1 &&
-    metrics.tradingDays >= 1
-
-  const statusLabel = eligible ? "Eligible When Live" : "Not Ready Yet"
+    metrics.accountInGoodStanding &&
+    metrics.closedTrades.length >= 5 &&
+    metrics.tradingDays >= 5 &&
+    metrics.openTrades.length === 0 &&
+    metrics.pendingTrades.length === 0
 
   const summaryCards = [
     {
-      label: "Tournament Status",
+      label: "Tournament System",
       value: "Coming Soon",
-      subtext: "No real tournament engine is live yet",
+      subtext: "No fake prize pools or fake leaderboards",
     },
     {
       label: "Your Eligibility",
-      value: statusLabel,
-      subtext: "Based on your real account and trade data",
+      value: eligible ? "Ready when live" : "Not ready yet",
+      subtext: "Based on real account and trade data",
     },
     {
       label: "Closed Trades",
       value: String(metrics.closedTrades.length),
-      subtext: "Used as a simple eligibility signal",
+      subtext: "Real completed trades",
     },
     {
       label: "Trading Days",
       value: String(metrics.tradingDays),
-      subtext: "Pulled from your live trade history",
+      subtext: "Real active closed-trade days",
     },
   ]
 
   const requirements = [
     {
-      title: "Active Account",
+      title: "Active account",
       value: account ? "Met" : "Missing",
-      note: "A linked active account is required before tournament entry.",
+      note: "A linked live account is required before tournament entry.",
     },
     {
-      title: "Good Standing",
-      value: account && !account.breached ? "Met" : "Not Met",
-      note: "Breached or locked accounts should not be eligible.",
+      title: "Good standing",
+      value: metrics.accountInGoodStanding ? "Met" : "Not met",
+      note: "Breached or locked accounts should never be eligible.",
     },
     {
-      title: "Closed Trades",
-      value: metrics.closedTrades.length >= 1 ? "Met" : "Not Met",
-      note: "At least one closed trade helps confirm live usage.",
+      title: "Closed trades history",
+      value: metrics.closedTrades.length >= 5 ? "Met" : "Not met",
+      note: "At least 5 closed trades are required for future tournament readiness.",
     },
     {
-      title: "Trading Days",
-      value: metrics.tradingDays >= 1 ? "Met" : "Not Met",
-      note: "Basic history exists before competition participation.",
+      title: "Trading days history",
+      value: metrics.tradingDays >= 5 ? "Met" : "Not met",
+      note: "At least 5 trading days are required before joining.",
+    },
+    {
+      title: "No open exposure",
+      value:
+        metrics.openTrades.length === 0 && metrics.pendingTrades.length === 0 ? "Met" : "Not met",
+      note: "Open or pending orders should block participation until flattened.",
     },
   ]
 
@@ -111,23 +117,19 @@ export default function TournamentsPage() {
     {
       time: "Live",
       title: "Tournament page cleaned up",
-      desc: "This section no longer shows fake participants, fake prizes, or fake rankings.",
+      desc: "Fake leaderboard rows, fake participants, and fake rewards were removed.",
     },
     {
       time: "Live",
-      title: "Eligibility synced to account state",
-      desc: "Your readiness now reflects real account standing and trade history.",
+      title: "Eligibility tied to real data",
+      desc: "Tournament readiness now reflects account standing, closed trades, trading days, and open exposure.",
     },
     {
       time: "Live",
-      title: "Competition system pending",
-      desc: "A real tournament backend can be added later without rebuilding this page design.",
+      title: "Safe for launch",
+      desc: "The page remains premium without pretending the tournament backend is already live.",
     },
   ]
-
-  const yourPositionText = eligible
-    ? "Ready for future entry"
-    : "Complete account activity first"
 
   if (loading) {
     return (
@@ -161,15 +163,15 @@ export default function TournamentsPage() {
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl space-y-3">
               <div className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                🏆 Premium Tournaments
+                🏆 Tournaments
               </div>
               <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                Compete when the real tournament system goes live
+                Tournament mode is coming soon
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                This section is now honest and account-aware. Instead of fake prize pools and fake
-                leaderboards, it shows whether your current account would be eligible once
-                tournaments are actually launched.
+                This page no longer pretends there are live tournaments, prize pools, or rankings.
+                It now shows whether your current account would qualify once the real tournament
+                engine is built.
               </p>
             </div>
 
@@ -188,11 +190,17 @@ export default function TournamentsPage() {
           </div>
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
+        <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <div className="mb-5 flex flex-wrap items-center gap-3">
-              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                {eligible ? "✅ Eligibility Detected" : "⏳ Not Ready Yet"}
+              <span
+                className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                  eligible
+                    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                    : "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                }`}
+              >
+                {eligible ? "✅ Ready when live" : "⏳ Not ready yet"}
               </span>
               <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-white/60">
                 {account?.planName || "No Active Account"}
@@ -202,12 +210,11 @@ export default function TournamentsPage() {
             <div className="space-y-4">
               <div>
                 <h2 className="text-2xl font-semibold md:text-3xl">
-                  Tournament infrastructure can come later without fake frontend stats
+                  Honest now, expandable later
                 </h2>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-white/60 md:text-base">
-                  Your current page now reads your live account state to determine whether you would
-                  qualify for future events. That is way cleaner than pretending thousands of traders
-                  and prize pools already exist.
+                  This structure is ready for a future tournament backend, but it does not show made-up
+                  rewards or fake competition stats today.
                 </p>
               </div>
 
@@ -219,41 +226,31 @@ export default function TournamentsPage() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/40">Current Plan</p>
-                  <p className="mt-2 text-lg font-semibold">{account?.planName || "—"}</p>
-                  <p className="mt-1 text-xs text-white/50">Pulled from Firestore</p>
+                  <p className="text-xs text-white/40">Current Profit</p>
+                  <p className="mt-2 text-lg font-semibold">
+                    ${metrics.currentCycleProfit.toFixed(2)}
+                  </p>
+                  <p className="mt-1 text-xs text-white/50">Cycle profit from account balance</p>
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/40">Your Position</p>
-                  <p className="mt-2 text-lg font-semibold">{yourPositionText}</p>
-                  <p className="mt-1 text-xs text-white/50">No live rankings yet</p>
+                  <p className="text-xs text-white/40">Open Exposure</p>
+                  <p className="mt-2 text-lg font-semibold">
+                    {metrics.openTrades.length + metrics.pendingTrades.length}
+                  </p>
+                  <p className="mt-1 text-xs text-white/50">Open and pending trades</p>
                 </div>
-              </div>
-
-              <div className="flex flex-col gap-3 pt-2 sm:flex-row">
-                <button className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white">
-                  Coming Soon
-                </button>
-                <button className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white">
-                  Rules later
-                </button>
               </div>
             </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-white">Tournament Readiness</p>
-                <p className="mt-1 text-xs text-white/40">Basic eligibility checklist</p>
-              </div>
-              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                {eligible ? "Ready" : "Pending"}
-              </span>
+            <div className="mb-5">
+              <p className="text-sm font-medium text-white">Tournament readiness</p>
+              <p className="mt-1 text-xs text-white/40">Future-entry checklist</p>
             </div>
 
-            <div className="mt-6 space-y-3">
+            <div className="space-y-3">
               {requirements.map((item) => (
                 <div
                   key={item.title}
@@ -280,9 +277,9 @@ export default function TournamentsPage() {
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
           <div className="mb-5">
-            <h3 className="text-xl font-semibold">Recent Tournament Activity</h3>
+            <h3 className="text-xl font-semibold">Recent tournament system activity</h3>
             <p className="mt-1 text-sm text-white/40">
-              Honest platform updates until the real system exists
+              Platform-side notes until the real tournament engine exists
             </p>
           </div>
 

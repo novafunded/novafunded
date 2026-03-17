@@ -11,6 +11,15 @@ import {
 } from "@/lib/tradingAccount"
 import { deriveTradingMetrics } from "@/lib/tradingMetrics"
 
+type CertificateCard = {
+  id: string
+  title: string
+  subtitle: string
+  issuedAt: number | null
+  status: "Verified" | "Pending"
+  reason: string
+}
+
 function formatDate(value?: number | null) {
   if (!value) return "—"
 
@@ -21,9 +30,15 @@ function formatDate(value?: number | null) {
   })
 }
 
-function makeCertId(accountId?: string) {
-  if (!accountId) return "NV-CERT-PREVIEW"
-  return `NV-CERT-${accountId.slice(-6).toUpperCase()}`
+function makeCertId(accountId?: string, suffix = "BASE") {
+  if (!accountId) return `NV-CERT-${suffix}`
+  return `NV-CERT-${accountId.slice(-6).toUpperCase()}-${suffix}`
+}
+
+function getStatusTone(status: "Verified" | "Pending") {
+  return status === "Verified"
+    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+    : "border-amber-500/20 bg-amber-500/10 text-amber-300"
 }
 
 export default function CertificatesPage() {
@@ -49,7 +64,7 @@ export default function CertificatesPage() {
       try {
         const context = await loadTradingContext(user.uid, {
           includeTrades: true,
-          tradeLimit: 200,
+          tradeLimit: 300,
         })
 
         setContextStatus(context.status)
@@ -69,112 +84,86 @@ export default function CertificatesPage() {
   const metrics = useMemo(() => deriveTradingMetrics(account, trades), [account, trades])
 
   const accountStatus = getAccountDisplayStatus(account)
-  const verified = !!account && !account.breached
-  const certId = makeCertId(account?.id)
-  const closedTrades = metrics.closedTrades.length
-  const hasActivatedDate = !!account?.activatedAtMs
-  const achievementPercent = Math.min(
-    100,
-    [
-      account ? 25 : 0,
-      closedTrades > 0 ? 20 : 0,
-      metrics.currentCycleProfit > 0 ? 20 : 0,
-      verified ? 20 : 0,
-      hasActivatedDate ? 15 : 0,
-    ].reduce((sum, value) => sum + value, 0),
-  )
+  const activationVerified = !!account && metrics.accountActivated && metrics.accountInGoodStanding
+  const passedVerified = !!account && metrics.accountPassed && metrics.accountInGoodStanding
 
-  const certificateStats = [
-    {
-      label: "Certificates Issued",
-      value: account ? "1" : "0",
-      subtext: account ? "Based on your active account record" : "No active account found",
-      tone: "neutral",
-    },
-    {
-      label: "Latest Achievement",
-      value: account ? `${account.phase} Active` : "No milestone yet",
-      subtext: account ? `${account.planName} account` : "Waiting for account data",
-      tone: "positive",
-    },
-    {
-      label: "Verification Status",
-      value: verified ? "Verified" : "Pending",
-      subtext: verified ? "Account record is in good standing" : "Awaiting valid account state",
-      tone: "positive",
-    },
-    {
-      label: "Account Milestones",
-      value: String(
-        [
-          !!account,
-          closedTrades > 0,
-          metrics.currentCycleProfit > 0,
-          verified,
-        ].filter(Boolean).length,
-      ),
-      subtext: "Calculated from real trading/account data",
-      tone: "neutral",
-    },
-  ]
+  const certificates = useMemo<CertificateCard[]>(() => {
+    if (!account) return []
 
-  const certificates = account
-    ? [
-        {
-          title: `${account.planName} Certificate`,
-          type: "Primary",
-          issued: formatDate(account.activatedAtMs),
-          accountRef: account.planName,
-          status: verified ? "Verified" : "Pending",
-          id: certId,
-          description:
-            "Generated from your active NovaFunded account record, current phase, and account standing in Firestore.",
-        },
-      ]
-    : []
+    const items: CertificateCard[] = []
 
-  const milestones = [
+    items.push({
+      id: makeCertId(account.id, "ACT"),
+      title: `${account.planName} Activation Record`,
+      subtitle: "Issued only when a real activation timestamp exists in Firestore.",
+      issuedAt: account.activatedAtMs ?? null,
+      status: activationVerified ? "Verified" : "Pending",
+      reason: activationVerified
+        ? "Activation timestamp exists and the account is in good standing."
+        : account.activatedAtMs
+          ? "Activation exists, but the account is not currently in good standing."
+          : "No activation timestamp found on this account yet.",
+    })
+
+    items.push({
+      id: makeCertId(account.id, "PASS"),
+      title: `${account.planName} Evaluation Pass Record`,
+      subtitle: "Only verified when the account phase/status actually shows passed or funded.",
+      issuedAt: null,
+      status: passedVerified ? "Verified" : "Pending",
+      reason: passedVerified
+        ? "Account phase/status indicates a real passed or funded state."
+        : "No passed/funded state detected from the current account record.",
+    })
+
+    return items
+  }, [account, activationVerified, passedVerified])
+
+  const completedMilestones = metrics.achievementMilestones.filter(
+    (item) => item.status === "complete",
+  ).length
+  const totalMilestones = metrics.achievementMilestones.length
+  const achievementPercent =
+    totalMilestones > 0 ? Math.round((completedMilestones / totalMilestones) * 100) : 0
+
+  const stats = [
     {
-      title: "Account Created",
-      value: account ? "Completed" : "Pending",
-      note: account ? "An account record exists in Firestore." : "No linked account found yet.",
+      label: "Certificates Verified",
+      value: String(certificates.filter((item) => item.status === "Verified").length),
+      subtext: "Only real qualifying records count",
     },
     {
-      title: "Closed Trades Logged",
-      value: `${closedTrades}`,
-      note: "Pulled from your real trade history.",
-    },
-    {
-      title: "Current Profit",
-      value: metrics.currentCycleProfit > 0 ? "Positive" : "Flat / Negative",
-      note: "Based on start balance versus current balance.",
-    },
-    {
-      title: "Account Standing",
+      label: "Account Status",
       value: accountStatus,
-      note: "Derived from actual account status and breach state.",
+      subtext: "Pulled from the live account record",
+    },
+    {
+      label: "Achievement Progress",
+      value: `${achievementPercent}%`,
+      subtext: `${completedMilestones} of ${totalMilestones} real milestones completed`,
+    },
+    {
+      label: "Issued Dates Available",
+      value: String(certificates.filter((item) => !!item.issuedAt).length),
+      subtext: "No placeholder issue dates are shown",
     },
   ]
 
   const activity = [
     {
-      title: "Certificate data synced from Firestore",
+      title: "Certificate records synced",
       time: "Live",
-      desc: "This page no longer uses fake milestone records and now reflects your real account and trade data.",
+      desc: "Records on this page are now derived from actual account fields and trade history instead of placeholder certificate logic.",
     },
     {
-      title: "Primary certificate reference generated",
-      time: formatDate(account?.activatedAtMs),
-      desc: account
-        ? `Certificate reference ${certId} is tied to your active ${account.planName} account.`
-        : "A certificate ID will generate once an active account is found.",
+      title: "Verification logic hardened",
+      time: "Live",
+      desc: "Verified badges only appear when the account actually qualifies for activation or passed/funded state.",
     },
     {
-      title: "Verification status checked",
+      title: "Milestone progress recalculated",
       time: "Live",
-      desc: verified
-        ? "Your account currently appears valid and in good standing."
-        : "Your account has not yet met the current verified condition.",
+      desc: "Achievement progress is now based on real account activation, pass state, closed trades, trading days, and profit.",
     },
   ]
 
@@ -213,27 +202,42 @@ export default function CertificatesPage() {
                 🏅 Certificates & Achievements
               </div>
               <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                Verified account milestones and certificate records
+                Real certificate records only
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                This page now builds certificate-style records from your real NovaFunded account,
-                account standing, and trade history instead of fake achievement data.
+                Verified states, issue dates, and achievement progress now come from real account
+                activation, status, and trade history. No placeholder verification and no fake dates.
               </p>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <button className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10">
-                Download later
-              </button>
             </div>
           </div>
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-[1.3fr_0.95fr]">
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {stats.map((item) => (
+            <div
+              key={item.label}
+              className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm"
+            >
+              <p className="text-sm text-white/40">{item.label}</p>
+              <p className="mt-2 text-2xl font-semibold text-white">{item.value}</p>
+              <p className="mt-2 text-sm text-white/50">{item.subtext}</p>
+            </div>
+          ))}
+        </section>
+
+        <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <div className="mb-5 flex flex-wrap items-center gap-3">
-              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                {verified ? "✅ Verified Achievement" : "⏳ Pending Verification"}
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  activationVerified || passedVerified
+                    ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                    : "border border-amber-500/20 bg-amber-500/10 text-amber-300"
+                }`}
+              >
+                {activationVerified || passedVerified
+                  ? "✅ At least one verified record"
+                  : "⏳ No verified records yet"}
               </span>
               <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-white/60">
                 {account?.planName ?? "No Active Account"}
@@ -243,187 +247,171 @@ export default function CertificatesPage() {
             <div className="space-y-4">
               <div>
                 <h2 className="text-2xl font-semibold md:text-3xl">
-                  Your account journey is now backed by real platform data
+                  Achievement progress based on actual milestones
                 </h2>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-white/60 md:text-base">
-                  Certificate cards and milestone visibility are now tied to your actual account
-                  record, balance state, trade history, and current standing inside Firestore.
+                  This progress bar does not guess. It only moves when real account activation,
+                  pass/funded state, trade count, trading days, and profit milestones are actually met.
                 </p>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/40">Latest Certificate</p>
-                  <p className="mt-2 text-lg font-semibold">{account?.planName ?? "—"}</p>
-                  <p className="mt-1 text-xs text-white/50">Issued {formatDate(account?.activatedAtMs)}</p>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/40">Current Account</p>
-                  <p className="mt-2 text-lg font-semibold">{account?.phase ?? "—"}</p>
-                  <p className="mt-1 text-xs text-white/50">{account?.planName ?? "No linked account"}</p>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/40">Verification State</p>
-                  <p className="mt-2 text-lg font-semibold text-emerald-400">
-                    {verified ? "Confirmed" : "Pending"}
-                  </p>
-                  <p className="mt-1 text-xs text-white/50">Live account record validation</p>
-                </div>
               </div>
 
               <div className="pt-2">
                 <p className="mb-2 text-xs uppercase tracking-[0.2em] text-white/40">
-                  Achievement Completion
+                  Real milestone completion
                 </p>
                 <div className="h-3 overflow-hidden rounded-full bg-white/5">
                   <div
-                    className="h-full rounded-full bg-emerald-500"
+                    className="h-full rounded-full bg-emerald-500 transition-all"
                     style={{ width: `${achievementPercent}%` }}
                   />
                 </div>
                 <div className="mt-2 flex items-center justify-between text-xs text-white/40">
-                  <span>Account creation, verification state, trade history, and status checks</span>
+                  <span>{completedMilestones} completed milestones</span>
                   <span>{achievementPercent}%</span>
                 </div>
+              </div>
+
+              <div className="grid gap-3">
+                {metrics.achievementMilestones.map((item) => (
+                  <div
+                    key={item.key}
+                    className="rounded-2xl border border-white/10 bg-black/20 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium">{item.label}</p>
+                        <p className="mt-1 text-sm text-white/50">Target: {item.target}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-semibold text-white">{item.value}</p>
+                        <p
+                          className={`mt-1 text-xs ${
+                            item.status === "complete"
+                              ? "text-emerald-400"
+                              : item.status === "blocked"
+                                ? "text-red-300"
+                                : "text-amber-300"
+                          }`}
+                        >
+                          {item.status === "complete"
+                            ? "Complete"
+                            : item.status === "blocked"
+                              ? "Blocked"
+                              : "Pending"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-white">Certificate Verification</p>
-                <p className="mt-1 text-xs text-white/40">Current record summary</p>
-              </div>
-              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                🔒 Secure
-              </span>
+            <div className="mb-5">
+              <p className="text-sm font-medium text-white">Account Record Summary</p>
+              <p className="mt-1 text-xs text-white/40">Live Firestore-backed state</p>
             </div>
 
-            <div className="mt-6 space-y-3">
+            <div className="space-y-3">
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Primary Record ID</p>
-                  <p className="text-sm font-medium">{certId}</p>
+                  <p className="text-sm text-white/60">Plan</p>
+                  <p className="text-sm font-medium">{account?.planName ?? "—"}</p>
                 </div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Issue Date</p>
+                  <p className="text-sm text-white/60">Phase</p>
+                  <p className="text-sm font-medium">{account?.phase ?? "—"}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Status</p>
+                  <p className="text-sm font-medium">{accountStatus}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Activation Date</p>
                   <p className="text-sm font-medium">{formatDate(account?.activatedAtMs)}</p>
                 </div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Record Status</p>
-                  <p className="text-sm font-medium text-emerald-400">
-                    {verified ? "Verified" : "Pending"}
-                  </p>
+                  <p className="text-sm text-white/60">Closed Trades</p>
+                  <p className="text-sm font-medium">{metrics.closedTrades.length}</p>
                 </div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Associated Account</p>
-                  <p className="text-sm font-medium">{account?.planName ?? "—"}</p>
+                  <p className="text-sm text-white/60">Trading Days</p>
+                  <p className="text-sm font-medium">{metrics.tradingDays}</p>
                 </div>
               </div>
-            </div>
-
-            <div className="mt-6 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
-              <p className="text-sm font-medium text-emerald-400">Real credibility boost</p>
-              <p className="mt-2 text-sm leading-6 text-white/70">
-                This section now feels stronger because the values are pulled from real account
-                data instead of being hardcoded frontend-only placeholders.
-              </p>
             </div>
           </div>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {certificateStats.map((item) => (
-            <div
-              key={item.label}
-              className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm"
-            >
-              <p className="text-sm text-white/40">{item.label}</p>
-              <p
-                className={`mt-2 text-2xl font-semibold ${
-                  item.tone === "positive" ? "text-emerald-400" : "text-white"
-                }`}
-              >
-                {item.value}
-              </p>
-              <p className="mt-2 text-sm text-white/50">{item.subtext}</p>
-            </div>
-          ))}
-        </section>
-
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div>
-              <h3 className="text-xl font-semibold">Issued Certificates</h3>
-              <p className="mt-1 text-sm text-white/40">
-                Generated from your active account state
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-2 text-xs text-white/50">
-              <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                Firestore-backed
-              </span>
-              <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                Real account-linked
-              </span>
-            </div>
+          <div className="mb-5">
+            <h3 className="text-xl font-semibold">Certificate Records</h3>
+            <p className="mt-1 text-sm text-white/40">
+              Records are visible, but only qualified ones are marked verified.
+            </p>
           </div>
 
           {certificates.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-black/20 p-5 text-sm text-white/50">
-              No certificate can be shown yet because there is no active account record available.
-              Current context status: {contextStatus || "unknown"}
+              No account record found, so there are no certificate records to render yet. Context
+              status: {contextStatus || "unknown"}
             </div>
           ) : (
-            <div className="grid gap-4 xl:grid-cols-1">
+            <div className="grid gap-4">
               {certificates.map((item) => (
                 <div
                   key={item.id}
                   className="rounded-2xl border border-white/10 bg-black/20 p-5"
                 >
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/60">
-                        {item.type}
-                      </span>
-                      <h4 className="mt-3 text-lg font-semibold">{item.title}</h4>
+                      <h4 className="text-lg font-semibold">{item.title}</h4>
+                      <p className="mt-2 text-sm leading-6 text-white/50">{item.subtitle}</p>
                     </div>
 
-                    <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
+                    <span className={`rounded-full border px-3 py-1 text-xs font-medium ${getStatusTone(item.status)}`}>
                       {item.status}
                     </span>
                   </div>
 
-                  <p className="mt-3 text-sm leading-6 text-white/50">{item.description}</p>
-
                   <div className="mt-5 grid gap-3 md:grid-cols-3">
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                      <p className="text-[11px] text-white/40">Issued</p>
-                      <p className="mt-1 text-sm font-medium">{item.issued}</p>
-                    </div>
-
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                      <p className="text-[11px] text-white/40">Account Reference</p>
-                      <p className="mt-1 text-sm font-medium">{item.accountRef}</p>
-                    </div>
-
                     <div className="rounded-xl border border-white/10 bg-white/5 p-3">
                       <p className="text-[11px] text-white/40">Certificate ID</p>
                       <p className="mt-1 text-sm font-medium">{item.id}</p>
                     </div>
+
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <p className="text-[11px] text-white/40">Issue Date</p>
+                      <p className="mt-1 text-sm font-medium">{formatDate(item.issuedAt)}</p>
+                    </div>
+
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <p className="text-[11px] text-white/40">State</p>
+                      <p className="mt-1 text-sm font-medium">{item.status}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-white/40">
+                      Validation note
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-white/60">{item.reason}</p>
                   </div>
                 </div>
               ))}
@@ -431,63 +419,35 @@ export default function CertificatesPage() {
           )}
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-            <div className="mb-5">
-              <h3 className="text-xl font-semibold">Progress Milestones</h3>
-              <p className="mt-1 text-sm text-white/40">
-                Account checkpoints built from live values
-              </p>
-            </div>
-
-            <div className="space-y-3">
-              {milestones.map((item) => (
-                <div
-                  key={item.title}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">{item.title}</p>
-                      <p className="mt-2 text-sm leading-6 text-white/50">{item.note}</p>
-                    </div>
-                    <p className="text-sm font-semibold text-emerald-400">{item.value}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
+          <div className="mb-5">
+            <h3 className="text-xl font-semibold">Recent Certificate Activity</h3>
+            <p className="mt-1 text-sm text-white/40">
+              System-side changes that affect this profile
+            </p>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-            <div className="mb-5">
-              <h3 className="text-xl font-semibold">Recent Certificate Activity</h3>
-              <p className="mt-1 text-sm text-white/40">
-                Latest record-style updates for this profile
-              </p>
-            </div>
+          <div className="space-y-4">
+            {activity.map((item) => (
+              <div
+                key={item.title}
+                className="rounded-2xl border border-white/10 bg-black/20 p-4"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
+                    📜
+                  </div>
 
-            <div className="space-y-4">
-              {activity.map((item) => (
-                <div
-                  key={item.title}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex items-start gap-4">
-                    <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
-                      📜
+                  <div className="flex-1">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-sm font-medium">{item.title}</p>
+                      <span className="text-xs text-white/40">{item.time}</span>
                     </div>
-
-                    <div className="flex-1">
-                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-sm font-medium">{item.title}</p>
-                        <span className="text-xs text-white/40">{item.time}</span>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-white/50">{item.desc}</p>
-                    </div>
+                    <p className="mt-2 text-sm leading-6 text-white/50">{item.desc}</p>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </section>
       </div>

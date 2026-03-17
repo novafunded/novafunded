@@ -1,0 +1,5 @@
+[33me521fa2[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m Sync trade terminal to Firestore and improve drag behavior
+[33mb2b5b38[m Connect analytics and payouts to live trading data
+[33m0c78749[m Add shared trading account and metrics layer
+[33mcb610d9[m Fix trade terminal math and breach lock
+[33mc07ff8a[m Add Stripe success confirmation flow

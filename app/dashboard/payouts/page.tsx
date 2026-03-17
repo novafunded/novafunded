@@ -4,16 +4,41 @@ import { useEffect, useMemo, useState } from "react"
 import { onAuthStateChanged } from "firebase/auth"
 import { auth } from "@/lib/firebase"
 import { loadTradingContext, type TradingContext } from "@/lib/tradingAccount"
-import { deriveTradingMetrics } from "@/lib/tradingMetrics"
+import { deriveTradingMetrics, type TradingMilestone } from "@/lib/tradingMetrics"
 
 function formatMoney(value: number, withPlus = false) {
   const sign = withPlus && value > 0 ? "+" : ""
   return `${sign}$${value.toFixed(2)}`
 }
 
+function getMilestoneTone(status: TradingMilestone["status"]) {
+  if (status === "complete") {
+    return {
+      badge: "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
+      text: "text-emerald-400",
+      label: "Met",
+    }
+  }
+
+  if (status === "blocked") {
+    return {
+      badge: "border border-red-500/20 bg-red-500/10 text-red-300",
+      text: "text-red-300",
+      label: "Blocked",
+    }
+  }
+
+  return {
+    badge: "border border-amber-500/20 bg-amber-500/10 text-amber-300",
+    text: "text-amber-300",
+    label: "Pending",
+  }
+}
+
 export default function PayoutsPage() {
   const [context, setContext] = useState<TradingContext | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -28,13 +53,22 @@ export default function PayoutsPage() {
         return
       }
 
-      const next = await loadTradingContext(user.uid, {
-        includeTrades: true,
-        tradeLimit: 250,
-      })
+      setLoading(true)
+      setError("")
 
-      setContext(next)
-      setLoading(false)
+      try {
+        const next = await loadTradingContext(user.uid, {
+          includeTrades: true,
+          tradeLimit: 300,
+        })
+
+        setContext(next)
+      } catch (err) {
+        console.error("Failed to load payouts page:", err)
+        setError("Failed to load payout data.")
+      } finally {
+        setLoading(false)
+      }
     })
 
     return () => unsub()
@@ -44,21 +78,25 @@ export default function PayoutsPage() {
     return deriveTradingMetrics(context?.account ?? null, context?.trades ?? [])
   }, [context])
 
+  const completedMilestones = metrics.payoutMilestones.filter(
+    (item) => item.status === "complete",
+  ).length
+
   const payoutStats = useMemo(() => {
     return [
       {
         label: "Available for Withdrawal",
         value: formatMoney(metrics.availableWithdrawal),
         subtext: metrics.payoutEligible
-          ? "Eligible based on current account stats"
-          : "Locked until requirements are met",
-        tone: "positive",
+          ? "Unlocked after all strict payout rules passed"
+          : "Locked until every payout milestone is met",
+        tone: metrics.payoutEligible ? "positive" : "neutral",
       },
       {
-        label: "Readiness",
-        value: `${metrics.payoutReadinessPercent}%`,
-        subtext: metrics.payoutBlockedReason ?? "Ready for request",
-        tone: "neutral",
+        label: "Readiness Stage",
+        value: metrics.payoutReadinessLabel,
+        subtext: metrics.payoutBlockedReason ?? "Ready for payout request",
+        tone: metrics.payoutEligible ? "positive" : "neutral",
       },
       {
         label: "Profit Split",
@@ -69,8 +107,8 @@ export default function PayoutsPage() {
       {
         label: "Current Cycle Profit",
         value: formatMoney(metrics.currentCycleProfit, true),
-        subtext: "Derived from active account balance",
-        tone: "neutral",
+        subtext: "Derived from live account balance",
+        tone: metrics.currentCycleProfit >= 100 ? "positive" : "neutral",
       },
     ]
   }, [metrics])
@@ -78,21 +116,21 @@ export default function PayoutsPage() {
   const payoutMethods = [
     {
       method: "Crypto Transfer",
-      desc: "Fast settlement for supported payout requests.",
+      desc: "Fast settlement for approved payout requests.",
       eta: "Within 6-18 hours",
       fee: "Low fee",
       status: "Preferred",
     },
     {
       method: "Bank Transfer",
-      desc: "Standard withdrawal route for verified accounts.",
+      desc: "Standard withdrawal route for eligible traders.",
       eta: "1-3 business days",
       fee: "Standard fee",
       status: "Available",
     },
     {
       method: "Rise / Deel",
-      desc: "Alternative payout rail for global traders.",
+      desc: "Alternative payout rail for supported regions.",
       eta: "Up to 24 hours",
       fee: "Varies by region",
       status: "Supported",
@@ -101,68 +139,34 @@ export default function PayoutsPage() {
 
   const payoutHistory = [
     {
-      id: "No live payout records yet",
-      date: "--",
-      amount: "--",
-      method: "--",
-      status: "Pending Integration",
-    },
-  ]
-
-  const requirements = [
-    {
-      title: "Minimum Profit Threshold",
-      value: metrics.currentCycleProfit >= 100 ? "Met" : "Not Met",
-      desc: "Your account must exceed the minimum withdrawal threshold before a request can be submitted.",
-    },
-    {
-      title: "Consistency Review",
-      value: context?.account && !context.account.breached ? "Passed" : "Blocked",
-      desc: "Payouts are reviewed for risk compliance, trading behavior, and rule adherence before approval.",
-    },
-    {
-      title: "Open Positions",
-      value:
-        metrics.openTrades.length === 0 && metrics.pendingTrades.length === 0
-          ? "Closed"
-          : "Still Open",
-      desc: "All active trades must be closed before entering a payout request window.",
-    },
-    {
-      title: "Account Status",
-      value:
-        context?.account &&
-        !context.account.breached &&
-        !["breached", "locked"].includes(context.account.status.toLowerCase())
-          ? "In Good Standing"
-          : "Not Eligible",
-      desc: "Breaches, violations, or ongoing investigations may pause or deny payout eligibility.",
+      id: "No payout records yet",
+      date: "—",
+      amount: "—",
+      method: "—",
+      status: "No Requests Submitted",
     },
   ]
 
   const recentActivity = [
     {
-      title: metrics.payoutEligible ? "Payout request is unlocked" : "Payout request is currently locked",
+      title: metrics.payoutEligible ? "Payout request unlocked" : "Payout request locked",
       time: "Live",
-      desc: metrics.payoutBlockedReason ?? "All payout checks are currently passing.",
+      desc: metrics.payoutBlockedReason ?? "All strict payout rules are currently passing.",
     },
     {
-      title: "Current cycle profit",
+      title: "Cycle profit updated",
       time: "Live",
       desc: `${formatMoney(metrics.currentCycleProfit, true)} based on the active account balance.`,
     },
     {
-      title: "Closed trades counted",
+      title: "Closed trade count reviewed",
       time: "Live",
-      desc: `${metrics.closedTrades.length} closed trades are currently included in payout review.`,
+      desc: `${metrics.closedTrades.length} closed trades currently count toward payout eligibility.`,
     },
     {
-      title: "Open position check",
+      title: "Trading day count reviewed",
       time: "Live",
-      desc:
-        metrics.openTrades.length === 0 && metrics.pendingTrades.length === 0
-          ? "No open or pending trades are blocking payout eligibility."
-          : "Open or pending trades are still blocking payout eligibility.",
+      desc: `${metrics.tradingDays} trading days currently count toward payout eligibility.`,
     },
   ]
 
@@ -171,6 +175,17 @@ export default function PayoutsPage() {
       <div className="min-h-screen bg-[#0A0A0A] text-white">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           Loading payouts...
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] text-white">
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-6">
+          <h1 className="text-2xl font-semibold text-red-300">Payouts failed to load</h1>
+          <p className="mt-2 text-sm text-red-100/80">{error}</p>
         </div>
       </div>
     )
@@ -196,10 +211,11 @@ export default function PayoutsPage() {
                 💸 Payout Center
               </div>
               <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                LIVE FIRESTORE PAYOUTS
+                Strict payout eligibility
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                Live payout eligibility pulled from your active account and trade history.
+                Payout readiness is now based on strict real account rules from Firestore and trade
+                history. No fake percentages and no soft frontend-only calculations.
               </p>
             </div>
 
@@ -244,22 +260,26 @@ export default function PayoutsPage() {
               <div>
                 <h2 className="text-2xl font-semibold md:text-3xl">
                   {metrics.payoutEligible
-                    ? "Your funded account is payout eligible this cycle"
+                    ? "Your account is eligible for a payout request"
                     : "Your account is not payout eligible yet"}
                 </h2>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-white/60 md:text-base">
                   {metrics.payoutBlockedReason ??
-                    "Your account currently meets the payout checks shown below."}
+                    "All strict payout checks are currently passing."}
                 </p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                   <p className="text-xs text-white/40">Current Cycle Profit</p>
-                  <p className="mt-2 text-lg font-semibold text-emerald-400">
+                  <p
+                    className={`mt-2 text-lg font-semibold ${
+                      metrics.currentCycleProfit >= 100 ? "text-emerald-400" : "text-white"
+                    }`}
+                  >
                     {formatMoney(metrics.currentCycleProfit, true)}
                   </p>
-                  <p className="mt-1 text-xs text-white/50">From active account balance</p>
+                  <p className="mt-1 text-xs text-white/50">Minimum required: $100</p>
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -271,19 +291,23 @@ export default function PayoutsPage() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-xs text-white/40">Closed Trades Counted</p>
-                  <p className="mt-2 text-lg font-semibold">{metrics.closedTrades.length}</p>
-                  <p className="mt-1 text-xs text-white/50">Used for payout review</p>
+                  <p className="text-xs text-white/40">Milestones Passed</p>
+                  <p className="mt-2 text-lg font-semibold">
+                    {completedMilestones} / {metrics.payoutMilestones.length}
+                  </p>
+                  <p className="mt-1 text-xs text-white/50">Strict payout requirements only</p>
                 </div>
               </div>
 
               <div className="pt-2">
                 <p className="mb-2 text-xs uppercase tracking-[0.2em] text-white/40">
-                  Payout Readiness
+                  Payout readiness stage
                 </p>
                 <div className="h-3 overflow-hidden rounded-full bg-white/5">
                   <div
-                    className="h-full rounded-full bg-emerald-500 transition-all"
+                    className={`h-full rounded-full transition-all ${
+                      metrics.payoutEligible ? "bg-emerald-500" : "bg-amber-400"
+                    }`}
                     style={{ width: `${metrics.payoutReadinessPercent}%` }}
                   />
                 </div>
@@ -299,7 +323,7 @@ export default function PayoutsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-white">Eligibility Snapshot</p>
-                <p className="mt-1 text-xs text-white/40">Live funded-account payout checks</p>
+                <p className="mt-1 text-xs text-white/40">Live strict payout checks</p>
               </div>
               <span
                 className={`rounded-full px-3 py-1 text-xs font-medium ${
@@ -315,29 +339,30 @@ export default function PayoutsPage() {
             <div className="mt-6 space-y-3">
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Status</p>
-                  <p className="text-sm font-medium">
-                    {metrics.payoutEligible ? "Eligible" : "Not Eligible"}
-                  </p>
+                  <p className="text-sm text-white/60">Readiness Stage</p>
+                  <p className="text-sm font-medium">{metrics.payoutReadinessLabel}</p>
                 </div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Risk Review</p>
-                  <p className="text-sm font-medium">
-                    {context.account.breached ? "Failed" : "Passed"}
-                  </p>
+                  <p className="text-sm text-white/60">Closed Trades</p>
+                  <p className="text-sm font-medium">{metrics.closedTrades.length} / 5</p>
                 </div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Open Positions</p>
+                  <p className="text-sm text-white/60">Trading Days</p>
+                  <p className="text-sm font-medium">{metrics.tradingDays} / 5</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Open / Pending Trades</p>
                   <p className="text-sm font-medium">
-                    {metrics.openTrades.length === 0 && metrics.pendingTrades.length === 0
-                      ? "None"
-                      : `${metrics.openTrades.length + metrics.pendingTrades.length} active`}
+                    {metrics.openTrades.length + metrics.pendingTrades.length}
                   </p>
                 </div>
               </div>
@@ -345,7 +370,9 @@ export default function PayoutsPage() {
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-white/60">Account Standing</p>
-                  <p className="text-sm font-medium">{context.account.status}</p>
+                  <p className="text-sm font-medium">
+                    {metrics.accountInGoodStanding ? "Good Standing" : "Blocked"}
+                  </p>
                 </div>
               </div>
             </div>
@@ -376,7 +403,7 @@ export default function PayoutsPage() {
             <div className="mb-5">
               <h3 className="text-xl font-semibold">Payout Methods</h3>
               <p className="mt-1 text-sm text-white/40">
-                Supported transfer options for funded account withdrawals
+                Supported transfer options for approved withdrawals
               </p>
             </div>
 
@@ -415,27 +442,37 @@ export default function PayoutsPage() {
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <div className="mb-5">
-              <h3 className="text-xl font-semibold">Payout Requirements</h3>
+              <h3 className="text-xl font-semibold">Strict Payout Requirements</h3>
               <p className="mt-1 text-sm text-white/40">
-                Live funded-account rules before withdrawal approval
+                These are the actual milestones that must be passed
               </p>
             </div>
 
             <div className="space-y-3">
-              {requirements.map((item) => (
-                <div
-                  key={item.title}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">{item.title}</p>
-                      <p className="mt-2 text-sm leading-6 text-white/50">{item.desc}</p>
+              {metrics.payoutMilestones.map((item) => {
+                const tone = getMilestoneTone(item.status)
+
+                return (
+                  <div
+                    key={item.key}
+                    className="rounded-2xl border border-white/10 bg-black/20 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium">{item.label}</p>
+                        <p className="mt-2 text-sm leading-6 text-white/50">
+                          Target: {item.target}
+                        </p>
+                        <p className="mt-1 text-xs text-white/40">Current: {item.value}</p>
+                      </div>
+
+                      <span className={`rounded-full px-3 py-1 text-xs font-medium ${tone.badge}`}>
+                        {tone.label}
+                      </span>
                     </div>
-                    <p className="text-sm font-semibold text-emerald-400">{item.value}</p>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </section>
@@ -445,16 +482,16 @@ export default function PayoutsPage() {
             <div>
               <h3 className="text-xl font-semibold">Payout History</h3>
               <p className="mt-1 text-sm text-white/40">
-                Completed withdrawals and funded-account payout records
+                Completed withdrawals and request records
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2 text-xs text-white/50">
               <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                Live data pending
+                No fake payout rows
               </span>
               <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                Eligibility now enforced
+                Real history pending backend
               </span>
             </div>
           </div>
@@ -511,6 +548,13 @@ export default function PayoutsPage() {
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Trading Days</p>
+                  <p className="text-sm font-medium">{metrics.tradingDays}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-white/60">Highest Winning Trade</p>
                   <p className="text-sm font-medium text-emerald-400">
                     {formatMoney(metrics.largestWin)}
@@ -529,8 +573,10 @@ export default function PayoutsPage() {
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-white/60">Verification Status</p>
-                  <p className="text-sm font-medium">Pending Integration</p>
+                  <p className="text-sm text-white/60">Open / Pending Trades</p>
+                  <p className="text-sm font-medium">
+                    {metrics.openTrades.length + metrics.pendingTrades.length}
+                  </p>
                 </div>
               </div>
             </div>
@@ -540,7 +586,7 @@ export default function PayoutsPage() {
             <div className="mb-5">
               <h3 className="text-xl font-semibold">Recent Payout Activity</h3>
               <p className="mt-1 text-sm text-white/40">
-                Latest funded-account withdrawal updates and account events
+                Latest withdrawal status and account-side checks
               </p>
             </div>
 
@@ -566,6 +612,16 @@ export default function PayoutsPage() {
                 </div>
               ))}
             </div>
+
+            {!metrics.payoutEligible && (
+              <div className="mt-6 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
+                <p className="text-sm font-medium text-amber-300">Why it is locked</p>
+                <p className="mt-2 text-sm leading-6 text-white/70">
+                  {metrics.payoutBlockedReason ??
+                    "At least one strict payout milestone still needs to be completed."}
+                </p>
+              </div>
+            )}
           </div>
         </section>
       </div>

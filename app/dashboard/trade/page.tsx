@@ -1,433 +1,594 @@
 "use client"
 
+import { useMemo, useState, type ReactNode } from "react"
 import TradingViewChart from "@/components/dashboard/TradingViewChart"
 import ChartTradeOverlay from "@/components/dashboard/ChartTradeOverlay"
 
-export default function TradePage() {
+type OrderSide = "buy" | "sell"
+type OrderType = "market" | "limit"
+
+const SYMBOLS = {
+  BTCUSD: { label: "Bitcoin", livePrice: 68169, entry: 68169, stopLoss: 67750, takeProfit: 69050 },
+  XAUUSD: { label: "Gold", livePrice: 2165.4, entry: 2165.4, stopLoss: 2140.0, takeProfit: 2225.0 },
+  NAS100: { label: "Nasdaq 100", livePrice: 18125, entry: 18125, stopLoss: 18040, takeProfit: 18280 },
+  EURUSD: { label: "Euro / US Dollar", livePrice: 1.0842, entry: 1.0842, stopLoss: 1.0815, takeProfit: 1.0898 },
+  GBPUSD: { label: "British Pound / US Dollar", livePrice: 1.2718, entry: 1.2718, stopLoss: 1.2688, takeProfit: 1.2778 },
+} as const
+
+type SymbolKey = keyof typeof SYMBOLS
+
+function formatPrice(value: number, symbol: SymbolKey) {
+  if (symbol === "EURUSD" || symbol === "GBPUSD") return value.toFixed(4)
+  if (symbol === "XAUUSD") return value.toFixed(1)
+  if (symbol === "NAS100") return value.toFixed(1)
+  return value.toFixed(0)
+}
+
+function formatMoney(value: number) {
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+function StatusPill({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode
+  tone?: "neutral" | "positive" | "negative" | "warning"
+}) {
+  const styles =
+    tone === "positive"
+      ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+      : tone === "negative"
+        ? "border-red-400/20 bg-red-500/10 text-red-300"
+        : tone === "warning"
+          ? "border-amber-400/20 bg-amber-500/10 text-amber-300"
+          : "border-[#25344a] bg-[#0e1724] text-white/70"
+
   return (
-    <div className="p-4 space-y-4">
-      <h1 className="text-xl font-semibold text-white">Trade Terminal</h1>
+    <span
+      className={`inline-flex items-center rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${styles}`}
+    >
+      {children}
+    </span>
+  )
+}
 
-      <div className="relative h-[600px] w-full rounded-lg overflow-hidden border border-[#1c2940]">
-        <TradingViewChart symbol="BTCUSD" />
+function SymbolButton({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-md border px-3 py-2 text-xs font-semibold tracking-[0.08em] transition ${
+        active
+          ? "border-cyan-400/20 bg-cyan-500/10 text-cyan-300"
+          : "border-[#233248] bg-[#0a1320] text-white/70 hover:border-[#31445e] hover:bg-[#0e1828] hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
 
-        <ChartTradeOverlay
-          enabled
-          symbol="BTCUSD"
-          side="buy"
-          orderType="market"
-          livePrice={68000}
-          entry={68000}
-          stopLoss={67500}
-          takeProfit={69000}
-          chartLow={65000}
-          chartHigh={71000}
-          size={1}
-        />
-      </div>
+function ToggleButton({
+  active,
+  onClick,
+  children,
+  activeClassName,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+  activeClassName?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-md border px-3 py-2.5 text-sm font-medium transition ${
+        active
+          ? activeClassName ?? "border-cyan-400/20 bg-cyan-500/10 text-cyan-300"
+          : "border-[#233248] bg-[#0a1320] text-white/70 hover:border-[#31445e] hover:bg-[#0e1828] hover:text-white"
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function TerminalStat({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string
+  value: string
+  tone?: "default" | "positive" | "negative" | "accent"
+}) {
+  const valueClass =
+    tone === "positive"
+      ? "text-emerald-300"
+      : tone === "negative"
+        ? "text-red-300"
+        : tone === "accent"
+          ? "text-cyan-300"
+          : "text-white"
+
+  return (
+    <div className="rounded-md border border-[#182435] bg-[#0a121d] px-3 py-3">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-[#6d8199]">{label}</div>
+      <div className={`mt-2 text-lg font-semibold ${valueClass}`}>{value}</div>
     </div>
   )
 }
 
-import {
-  Timestamp,
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  orderBy,
-  query,
-  where,
-} from "firebase/firestore"
-import { db } from "@/lib/firebase"
-
-export type AccountData = {
-  id: string
-  userId: string
-  planName: string
-  phase: string
-  status: string
-  startBalance: number
-  balance: number
-  equity: number
-  maxLossLimit: number
-  dailyLossLimit: number
-  closedTrades: number
-  tradingDays: number
-  breached: boolean
-  activatedAtMs?: number
-}
-
-export type TradeRecord = {
-  id: string
-  symbol: string
-  side: "buy" | "sell"
-  orderType: "market" | "limit"
-  status: "pending" | "open" | "closed" | "cancelled"
-  requestedEntry: number
-  entry: number | null
-  useStopLoss: boolean
-  useTakeProfit: boolean
-  stopLoss: number | null
-  takeProfit: number | null
-  size: number
-  pnl: number
-  closeReason?: "tp" | "sl" | "manual" | "breach"
-  accountId?: string
-  userId?: string
-  createdAtMs?: number
-  openedAtMs?: number | null
-  closedAtMs?: number | null
-  closePrice?: number | null
-}
-
-export type UserProfile = {
-  uid?: string
-  email?: string
-  role?: string
-  activeAccountId?: string
-  displayName?: string
-  lastChallengeActivatedAtMs?: number
-}
-
-export type TradingContextStatus =
-  | "signed_out"
-  | "missing_user_profile"
-  | "no_active_account"
-  | "account_not_found"
-  | "ready"
-
-export type TradingContext = {
-  status: TradingContextStatus
-  userProfile: UserProfile | null
-  account: AccountData | null
-  trades: TradeRecord[]
-}
-
-type LoadTradingContextOptions = {
-  includeTrades?: boolean
-  tradeLimit?: number
-}
-
-function readTimestampMs(value: unknown): number | undefined {
-  if (typeof value === "number") return value
-
-  if (value instanceof Timestamp) {
-    return value.toMillis()
-  }
-
-  if (
-    value &&
-    typeof value === "object" &&
-    "toMillis" in value &&
-    typeof (value as { toMillis?: unknown }).toMillis === "function"
-  ) {
-    return (value as { toMillis: () => number }).toMillis()
-  }
-
-  return undefined
-}
-
-export function normalizePhase(value: unknown) {
-  if (typeof value === "string" && value.trim() !== "") return value
-  if (typeof value === "number") return `Phase ${value}`
-  return "Phase 1"
-}
-
-function mapAccountDoc(
-  accountId: string,
-  uid: string,
-  data: Record<string, unknown>,
-): AccountData {
-  return {
-    id: accountId,
-    userId: typeof data.userId === "string" ? data.userId : uid,
-    planName: typeof data.planName === "string" ? data.planName : "Flash 5K",
-    phase: normalizePhase(data.phase),
-    status: typeof data.status === "string" ? data.status : "active",
-    startBalance: typeof data.startBalance === "number" ? data.startBalance : 5000,
-    balance: typeof data.balance === "number" ? data.balance : 5000,
-    equity: typeof data.equity === "number" ? data.equity : 5000,
-    maxLossLimit: typeof data.maxLossLimit === "number" ? data.maxLossLimit : 500,
-    dailyLossLimit: typeof data.dailyLossLimit === "number" ? data.dailyLossLimit : 250,
-    closedTrades: typeof data.closedTrades === "number" ? data.closedTrades : 0,
-    tradingDays: typeof data.tradingDays === "number" ? data.tradingDays : 0,
-    breached: typeof data.breached === "boolean" ? data.breached : false,
-    activatedAtMs: readTimestampMs(data.activatedAt),
-  }
-}
-
-function mapTradeDoc(
-  tradeId: string,
-  data: Record<string, unknown>,
-): TradeRecord {
-  return {
-    id: tradeId,
-    symbol: typeof data.symbol === "string" ? data.symbol : "XAUUSD",
-    side: data.side === "sell" ? "sell" : "buy",
-    orderType: data.orderType === "limit" ? "limit" : "market",
-    status:
-      data.status === "pending" ||
-      data.status === "open" ||
-      data.status === "closed" ||
-      data.status === "cancelled"
-        ? data.status
-        : "closed",
-    requestedEntry:
-      typeof data.requestedEntry === "number"
-        ? data.requestedEntry
-        : typeof data.entry === "number"
-          ? data.entry
-          : 0,
-    entry: typeof data.entry === "number" ? data.entry : null,
-    useStopLoss: typeof data.useStopLoss === "boolean" ? data.useStopLoss : true,
-    useTakeProfit: typeof data.useTakeProfit === "boolean" ? data.useTakeProfit : true,
-    stopLoss: typeof data.stopLoss === "number" ? data.stopLoss : null,
-    takeProfit: typeof data.takeProfit === "number" ? data.takeProfit : null,
-    size: typeof data.size === "number" ? data.size : 1,
-    pnl: typeof data.pnl === "number" ? data.pnl : 0,
-    closeReason:
-      data.closeReason === "tp" ||
-      data.closeReason === "sl" ||
-      data.closeReason === "manual" ||
-      data.closeReason === "breach"
-        ? data.closeReason
-        : undefined,
-    accountId: typeof data.accountId === "string" ? data.accountId : undefined,
-    userId: typeof data.userId === "string" ? data.userId : undefined,
-    createdAtMs:
-      typeof data.createdAtMs === "number"
-        ? data.createdAtMs
-        : readTimestampMs(data.createdAt),
-    openedAtMs:
-      typeof data.openedAtMs === "number"
-        ? data.openedAtMs
-        : readTimestampMs(data.openedAt),
-    closedAtMs:
-      typeof data.closedAtMs === "number"
-        ? data.closedAtMs
-        : readTimestampMs(data.closedAt),
-    closePrice: typeof data.closePrice === "number" ? data.closePrice : null,
-  }
-}
-
-export function getAccountDisplayStatus(account: AccountData | null) {
-  if (!account) return "No Account"
-  if (account.breached) return "Breached"
-
-  const normalized = account.status.trim().toLowerCase()
-  if (normalized === "passed") return "Passed"
-  if (normalized === "breached") return "Breached"
-  if (normalized === "locked") return "Locked"
-  if (normalized === "active") return "Active"
-
-  return account.status
-}
-
-export function isTradingLocked(account: AccountData | null) {
-  if (!account) return true
-  if (account.breached) return true
-
-  const normalized = account.status.trim().toLowerCase()
-  return normalized === "breached" || normalized === "locked"
-}
-
-export function isFreshActivatedAccount(
-  account: AccountData | null,
-  trades: TradeRecord[],
-) {
-  if (!account) return false
+function TicketField({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string
+  value: string
+  tone?: "default" | "positive" | "negative" | "accent"
+}) {
+  const valueClass =
+    tone === "positive"
+      ? "text-emerald-300"
+      : tone === "negative"
+        ? "text-red-300"
+        : tone === "accent"
+          ? "text-cyan-300"
+          : "text-white"
 
   return (
-    trades.length === 0 &&
-    account.balance === account.startBalance &&
-    account.equity === account.startBalance &&
-    account.closedTrades === 0 &&
-    account.tradingDays === 0
+    <div className="rounded-md border border-[#182435] bg-[#0a121d] px-3 py-3">
+      <p className="text-[10px] uppercase tracking-[0.18em] text-[#6d8199]">{label}</p>
+      <p className={`mt-2 font-mono text-base font-semibold ${valueClass}`}>{value}</p>
+    </div>
   )
 }
 
-export function syncTradeAccountSnapshot(account: AccountData | null) {
-  if (typeof window === "undefined") return
-
-  if (!account) {
-    window.localStorage.removeItem("novafunded-trade-account")
-    window.dispatchEvent(new Event("novafunded-account-sync"))
-    return
-  }
-
-  const status = getAccountDisplayStatus(account)
-  const statusTone =
-    status === "Breached" || status === "Locked" ? "negative" : "positive"
-
-  window.localStorage.setItem(
-    "novafunded-trade-account",
-    JSON.stringify({
-      balance: account.balance,
-      equity: account.equity,
-      status,
-      statusTone,
-      tradingDays: account.tradingDays,
-      closedTrades: account.closedTrades,
-      planName: account.planName,
-      phase: account.phase,
-      accountId: account.id,
-    }),
-  )
-
-  window.dispatchEvent(new Event("novafunded-account-sync"))
+function TableHeader({ children }: { children: ReactNode }) {
+  return <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.18em] text-[#70839a]">{children}</th>
 }
 
-async function getFallbackAccountForUser(uid: string): Promise<AccountData | null> {
-  const byActivation = await getDocs(
-    query(
-      collection(db, "accounts"),
-      where("userId", "==", uid),
-      orderBy("activatedAt", "desc"),
-      limit(1),
-    ),
-  )
+function TableCell({
+  children,
+  tone = "default",
+}: {
+  children: ReactNode
+  tone?: "default" | "positive" | "negative" | "muted"
+}) {
+  const textClass =
+    tone === "positive"
+      ? "text-emerald-300"
+      : tone === "negative"
+        ? "text-red-300"
+        : tone === "muted"
+          ? "text-white/45"
+          : "text-white/85"
 
-  if (!byActivation.empty) {
-    const docSnap = byActivation.docs[0]
-    return mapAccountDoc(
-      docSnap.id,
-      uid,
-      docSnap.data() as Record<string, unknown>,
-    )
-  }
-
-  const byCreatedMs = await getDocs(
-    query(
-      collection(db, "accounts"),
-      where("userId", "==", uid),
-      orderBy("createdAtMs", "desc"),
-      limit(1),
-    ),
-  )
-
-  if (!byCreatedMs.empty) {
-    const docSnap = byCreatedMs.docs[0]
-    return mapAccountDoc(
-      docSnap.id,
-      uid,
-      docSnap.data() as Record<string, unknown>,
-    )
-  }
-
-  const byCreatedAt = await getDocs(
-    query(
-      collection(db, "accounts"),
-      where("userId", "==", uid),
-      orderBy("createdAt", "desc"),
-      limit(1),
-    ),
-  )
-
-  if (!byCreatedAt.empty) {
-    const docSnap = byCreatedAt.docs[0]
-    return mapAccountDoc(
-      docSnap.id,
-      uid,
-      docSnap.data() as Record<string, unknown>,
-    )
-  }
-
-  return null
+  return <td className={`px-3 py-3 text-sm ${textClass}`}>{children}</td>
 }
 
-export async function loadTradingContext(
-  uid: string,
-  options?: LoadTradingContextOptions,
-): Promise<TradingContext> {
-  const includeTrades = options?.includeTrades ?? true
-  const tradeLimit = options?.tradeLimit ?? 200
+export default function TradePage() {
+  const [symbol, setSymbol] = useState<SymbolKey>("BTCUSD")
+  const [side, setSide] = useState<OrderSide>("buy")
+  const [orderType, setOrderType] = useState<OrderType>("market")
+  const [size, setSize] = useState(5)
+  const [useTp, setUseTp] = useState(true)
+  const [useSl, setUseSl] = useState(true)
 
-  const userRef = doc(db, "users", uid)
-  const userSnap = await getDoc(userRef)
+  const meta = SYMBOLS[symbol]
 
-  if (!userSnap.exists()) {
-    syncTradeAccountSnapshot(null)
-    return {
-      status: "missing_user_profile",
-      userProfile: null,
-      account: null,
-      trades: [],
-    }
-  }
+  const chartLow = useMemo(() => {
+    const values = [meta.livePrice, meta.entry, meta.stopLoss, meta.takeProfit]
+    return Math.min(...values) * 0.96
+  }, [meta])
 
-  const rawUser = userSnap.data() as Record<string, unknown>
-  const userProfile: UserProfile = {
-    uid: typeof rawUser.uid === "string" ? rawUser.uid : uid,
-    email: typeof rawUser.email === "string" ? rawUser.email : "",
-    role: typeof rawUser.role === "string" ? rawUser.role : "user",
-    displayName: typeof rawUser.displayName === "string" ? rawUser.displayName : "",
-    activeAccountId:
-      typeof rawUser.activeAccountId === "string" ? rawUser.activeAccountId : "",
-    lastChallengeActivatedAtMs: readTimestampMs(rawUser.lastChallengeActivatedAt),
-  }
+  const chartHigh = useMemo(() => {
+    const values = [meta.livePrice, meta.entry, meta.stopLoss, meta.takeProfit]
+    return Math.max(...values) * 1.04
+  }, [meta])
 
-  const trimmedActiveAccountId =
-    typeof userProfile.activeAccountId === "string"
-      ? userProfile.activeAccountId.trim()
-      : ""
+  const sideTone = side === "buy" ? "positive" : "negative"
 
-  let account: AccountData | null = null
+  const estimatedRisk = useMemo(() => {
+    const slDistance = useSl ? Math.abs(meta.entry - meta.stopLoss) : 0
+    return slDistance * size
+  }, [meta.entry, meta.stopLoss, size, useSl])
 
-  if (trimmedActiveAccountId) {
-    const accountRef = doc(db, "accounts", trimmedActiveAccountId)
-    const accountSnap = await getDoc(accountRef)
+  const estimatedReward = useMemo(() => {
+    const tpDistance = useTp ? Math.abs(meta.takeProfit - meta.entry) : 0
+    return tpDistance * size
+  }, [meta.entry, meta.takeProfit, size, useTp])
 
-    if (accountSnap.exists()) {
-      account = mapAccountDoc(
-        accountSnap.id,
-        uid,
-        accountSnap.data() as Record<string, unknown>,
-      )
-    }
-  }
+  const rr = useMemo(() => {
+    if (!useSl || !useTp || estimatedRisk <= 0) return "—"
+    return `1:${(estimatedReward / estimatedRisk).toFixed(2)}`
+  }, [estimatedRisk, estimatedReward, useSl, useTp])
 
-  if (!account) {
-    account = await getFallbackAccountForUser(uid)
-  }
-
-  if (!account) {
-    syncTradeAccountSnapshot(null)
-    return {
-      status: "no_active_account",
-      userProfile,
-      account: null,
-      trades: [],
-    }
-  }
-
-  let trades: TradeRecord[] = []
-
-  if (includeTrades) {
-    const tradesSnap = await getDocs(
-      query(
-        collection(db, "trades"),
-        where("accountId", "==", account.id),
-        orderBy("createdAtMs", "desc"),
-        limit(tradeLimit),
-      ),
-    )
-
-    trades = tradesSnap.docs.map((tradeDoc) =>
-      mapTradeDoc(tradeDoc.id, tradeDoc.data() as Record<string, unknown>),
-    )
-  }
-
-  syncTradeAccountSnapshot(account)
-
-  return {
-    status: "ready",
-    userProfile: {
-      ...userProfile,
-      activeAccountId: account.id,
+  const mockOpenRows = [
+    {
+      id: "POS-1028",
+      instrument: symbol,
+      side: side.toUpperCase(),
+      qty: `${size}.00`,
+      entry: formatPrice(meta.entry, symbol),
+      mark: formatPrice(meta.livePrice, symbol),
+      pnl:
+        side === "buy"
+          ? meta.livePrice >= meta.entry
+            ? "+$42.80"
+            : "-$42.80"
+          : meta.livePrice <= meta.entry
+            ? "+$42.80"
+            : "-$42.80",
+      status: "Open",
     },
-    account,
-    trades,
-  }
+  ]
+
+  const mockHistoryRows = [
+    {
+      id: "TRD-9012",
+      instrument: "XAUUSD",
+      side: "BUY",
+      qty: "3.00",
+      exit: "TP",
+      pnl: "+$86.40",
+      time: "09:32 UTC",
+    },
+    {
+      id: "TRD-9011",
+      instrument: "NAS100",
+      side: "SELL",
+      qty: "2.00",
+      exit: "Manual",
+      pnl: "-$34.50",
+      time: "08:11 UTC",
+    },
+    {
+      id: "TRD-9010",
+      instrument: "BTCUSD",
+      side: "BUY",
+      qty: "1.00",
+      exit: "TP",
+      pnl: "+$112.00",
+      time: "Yesterday",
+    },
+  ]
+
+  return (
+    <div className="min-h-screen bg-[#060b12] p-4 text-white">
+      <div className="mx-auto max-w-[1680px] space-y-4">
+        <section className="overflow-hidden rounded-lg border border-[#162131] bg-[#09111b] shadow-[0_24px_60px_rgba(0,0,0,0.35)]">
+          <div className="flex flex-col gap-3 border-b border-[#132030] px-4 py-4 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.26em] text-[#6a7d96]">NovaFunded Execution</p>
+              <h1 className="mt-1 text-[22px] font-semibold text-white">Trade Terminal</h1>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill tone="positive">Flash 5K</StatusPill>
+              <StatusPill>{symbol}</StatusPill>
+              <StatusPill tone={sideTone}>{side === "buy" ? "Long Bias" : "Short Bias"}</StatusPill>
+              <StatusPill tone="warning">{orderType === "market" ? "Market" : "Limit"}</StatusPill>
+            </div>
+          </div>
+
+          <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.7fr)_380px]">
+            <div className="space-y-4">
+              <div className="overflow-hidden rounded-lg border border-[#162131] bg-[#08111b]">
+                <div className="flex flex-col gap-3 border-b border-[#132030] px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {Object.entries(SYMBOLS).map(([key]) => (
+                      <SymbolButton
+                        key={key}
+                        active={symbol === key}
+                        onClick={() => setSymbol(key as SymbolKey)}
+                        label={key}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <TerminalStat label="Open" value="1" />
+                    <TerminalStat label="Pending" value="0" />
+                    <TerminalStat label="Closed" value="12" />
+                    <TerminalStat
+                      label="Live"
+                      value={formatPrice(meta.livePrice, symbol)}
+                      tone="accent"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid border-b border-[#132030] lg:grid-cols-[minmax(0,1fr)_260px]">
+                  <div className="border-b border-[#132030] px-4 py-3 lg:border-b-0 lg:border-r">
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-[#70839a]">
+                      Instrument
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="text-xl font-semibold text-white">{symbol}</span>
+                      <span className="text-sm text-white/45">{meta.label}</span>
+                    </div>
+                  </div>
+
+                  <div className="px-4 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-[#70839a]">
+                      Last Price
+                    </p>
+                    <p className="mt-2 font-mono text-[28px] font-semibold text-white">
+                      {formatPrice(meta.livePrice, symbol)}
+                    </p>
+                    <p className="mt-1 text-xs text-white/45">Streaming chart shell active</p>
+                  </div>
+                </div>
+
+                <div className="relative overflow-hidden bg-[#050a11]">
+                  <TradingViewChart symbol={symbol} />
+
+                  <ChartTradeOverlay
+                    enabled
+                    symbol={symbol}
+                    side={side}
+                    orderType={orderType}
+                    livePrice={meta.livePrice}
+                    entry={meta.entry}
+                    stopLoss={useSl ? meta.stopLoss : null}
+                    takeProfit={useTp ? meta.takeProfit : null}
+                    chartLow={chartLow}
+                    chartHigh={chartHigh}
+                    size={size}
+                  />
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-[#162131] bg-[#08111b]">
+                <div className="flex flex-col gap-2 border-b border-[#132030] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-[#70839a]">Open Positions</p>
+                    <h2 className="mt-1 text-base font-semibold text-white">Active Exposure</h2>
+                  </div>
+                  <StatusPill tone={sideTone}>{mockOpenRows[0].status}</StatusPill>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border-collapse">
+                    <thead className="bg-[#0b1521]">
+                      <tr className="border-b border-[#132030]">
+                        <TableHeader>ID</TableHeader>
+                        <TableHeader>Instrument</TableHeader>
+                        <TableHeader>Side</TableHeader>
+                        <TableHeader>Qty</TableHeader>
+                        <TableHeader>Entry</TableHeader>
+                        <TableHeader>Mark</TableHeader>
+                        <TableHeader>PnL</TableHeader>
+                        <TableHeader>Status</TableHeader>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mockOpenRows.map((row) => {
+                        const pnlPositive = row.pnl.startsWith("+")
+                        return (
+                          <tr key={row.id} className="border-b border-[#132030] bg-[#08111b]">
+                            <TableCell tone="muted">{row.id}</TableCell>
+                            <TableCell>{row.instrument}</TableCell>
+                            <TableCell tone={row.side === "BUY" ? "positive" : "negative"}>{row.side}</TableCell>
+                            <TableCell>{row.qty}</TableCell>
+                            <TableCell>{row.entry}</TableCell>
+                            <TableCell>{row.mark}</TableCell>
+                            <TableCell tone={pnlPositive ? "positive" : "negative"}>{row.pnl}</TableCell>
+                            <TableCell>{row.status}</TableCell>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-[#162131] bg-[#08111b]">
+                <div className="flex flex-col gap-2 border-b border-[#132030] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-[#70839a]">Execution History</p>
+                    <h2 className="mt-1 text-base font-semibold text-white">Recent Fills</h2>
+                  </div>
+                  <StatusPill>Session Log</StatusPill>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border-collapse">
+                    <thead className="bg-[#0b1521]">
+                      <tr className="border-b border-[#132030]">
+                        <TableHeader>ID</TableHeader>
+                        <TableHeader>Instrument</TableHeader>
+                        <TableHeader>Side</TableHeader>
+                        <TableHeader>Qty</TableHeader>
+                        <TableHeader>Exit</TableHeader>
+                        <TableHeader>PnL</TableHeader>
+                        <TableHeader>Time</TableHeader>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mockHistoryRows.map((row) => (
+                        <tr key={row.id} className="border-b border-[#132030] bg-[#08111b]">
+                          <TableCell tone="muted">{row.id}</TableCell>
+                          <TableCell>{row.instrument}</TableCell>
+                          <TableCell tone={row.side === "BUY" ? "positive" : "negative"}>{row.side}</TableCell>
+                          <TableCell>{row.qty}</TableCell>
+                          <TableCell>{row.exit}</TableCell>
+                          <TableCell tone={row.pnl.startsWith("+") ? "positive" : "negative"}>
+                            {row.pnl}
+                          </TableCell>
+                          <TableCell tone="muted">{row.time}</TableCell>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <aside className="space-y-4">
+              <section className="overflow-hidden rounded-lg border border-[#162131] bg-[#08111b]">
+                <div className="border-b border-[#132030] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-[#70839a]">Execution Controls</p>
+                  <h2 className="mt-1 text-base font-semibold text-white">Order Ticket</h2>
+                </div>
+
+                <div className="space-y-4 p-4">
+                  <div>
+                    <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#70839a]">Direction</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <ToggleButton
+                        active={side === "buy"}
+                        onClick={() => setSide("buy")}
+                        activeClassName="border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+                      >
+                        Buy
+                      </ToggleButton>
+                      <ToggleButton
+                        active={side === "sell"}
+                        onClick={() => setSide("sell")}
+                        activeClassName="border-red-400/20 bg-red-500/10 text-red-300"
+                      >
+                        Sell
+                      </ToggleButton>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#70839a]">Order Type</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <ToggleButton active={orderType === "market"} onClick={() => setOrderType("market")}>
+                        Market
+                      </ToggleButton>
+                      <ToggleButton active={orderType === "limit"} onClick={() => setOrderType("limit")}>
+                        Limit
+                      </ToggleButton>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[#70839a]">Protection</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <ToggleButton
+                        active={useTp}
+                        onClick={() => setUseTp((prev) => !prev)}
+                        activeClassName="border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
+                      >
+                        {useTp ? "TP Enabled" : "Enable TP"}
+                      </ToggleButton>
+                      <ToggleButton
+                        active={useSl}
+                        onClick={() => setUseSl((prev) => !prev)}
+                        activeClassName="border-red-400/20 bg-red-500/10 text-red-300"
+                      >
+                        {useSl ? "SL Enabled" : "Enable SL"}
+                      </ToggleButton>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-[#182435] bg-[#0a121d] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-[#70839a]">Position Size</p>
+                        <p className="mt-2 text-[34px] font-semibold leading-none text-white">{size}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-[#70839a]">Max</p>
+                        <p className="mt-2 text-lg font-semibold text-white">25</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-4 gap-2">
+                      {[-5, -1, 1, 5].map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setSize((prev) => Math.max(1, Math.min(25, prev + value)))}
+                          className="rounded-md border border-[#233248] bg-[#0a1320] px-3 py-2.5 text-sm font-medium text-white/75 transition hover:border-[#31445e] hover:bg-[#0e1828] hover:text-white"
+                        >
+                          {value > 0 ? `+${value}` : value}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <TicketField label="Entry" value={formatPrice(meta.entry, symbol)} tone="accent" />
+                    <TicketField label="Live" value={formatPrice(meta.livePrice, symbol)} />
+                    <TicketField
+                      label="Take Profit"
+                      value={useTp ? formatPrice(meta.takeProfit, symbol) : "Disabled"}
+                      tone="positive"
+                    />
+                    <TicketField
+                      label="Stop Loss"
+                      value={useSl ? formatPrice(meta.stopLoss, symbol) : "Disabled"}
+                      tone="negative"
+                    />
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <TicketField
+                      label="Est. Risk"
+                      value={useSl ? formatMoney(estimatedRisk) : "Off"}
+                      tone="negative"
+                    />
+                    <TicketField
+                      label="Est. Reward"
+                      value={useTp ? formatMoney(estimatedReward) : "Off"}
+                      tone="positive"
+                    />
+                    <TicketField label="R:R" value={rr} />
+                    <TicketField label="Instrument" value={symbol} />
+                  </div>
+
+                  <button
+                    type="button"
+                    className={`w-full rounded-md px-4 py-3.5 text-sm font-semibold transition ${
+                      side === "buy"
+                        ? "bg-emerald-500 text-black hover:bg-emerald-400"
+                        : "bg-red-500 text-white hover:bg-red-400"
+                    }`}
+                  >
+                    {orderType === "market"
+                      ? `Place ${side === "buy" ? "Buy" : "Sell"} Market`
+                      : `Confirm ${side === "buy" ? "Buy" : "Sell"} Limit`}
+                  </button>
+                </div>
+              </section>
+
+              <section className="overflow-hidden rounded-lg border border-[#162131] bg-[#08111b]">
+                <div className="border-b border-[#132030] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-[#70839a]">Account Snapshot</p>
+                  <h2 className="mt-1 text-base font-semibold text-white">Risk & Progress</h2>
+                </div>
+
+                <div className="grid gap-2 p-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                  <TerminalStat label="Balance" value={formatMoney(5125)} />
+                  <TerminalStat label="Equity" value={formatMoney(5182)} />
+                  <TerminalStat label="Net PnL" value={formatMoney(182)} tone="positive" />
+                  <TerminalStat label="Drawdown Left" value={formatMoney(318)} />
+                  <TerminalStat label="Daily Loss Left" value={formatMoney(143)} />
+                  <TerminalStat label="Target Progress" value="46%" tone="accent" />
+                </div>
+              </section>
+            </aside>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
 }

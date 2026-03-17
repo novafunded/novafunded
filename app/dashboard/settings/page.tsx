@@ -1,31 +1,124 @@
+"use client"
+
+import { useEffect, useMemo, useState } from "react"
+import { onAuthStateChanged } from "firebase/auth"
+import { auth } from "@/lib/firebase"
+import {
+  getAccountDisplayStatus,
+  loadTradingContext,
+  type AccountData,
+  type UserProfile,
+} from "@/lib/tradingAccount"
+
+function formatDateTime(value?: number | null) {
+  if (!value) return "—"
+
+  return new Date(value).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}
+
 export default function SettingsPage() {
-  const profileItems = [
-    { label: "Full Name", value: "Alexander Assin" },
-    { label: "Email Address", value: "alex@novafunded.io" },
-    { label: "Account Type", value: "Prime Trader" },
-    { label: "Time Zone", value: "America/Halifax" },
-  ]
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [contextStatus, setContextStatus] = useState("")
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [account, setAccount] = useState<AccountData | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setUserProfile(null)
+        setAccount(null)
+        setContextStatus("signed_out")
+        setLoading(false)
+        return
+      }
+
+      setLoading(true)
+      setError("")
+
+      try {
+        const context = await loadTradingContext(user.uid, {
+          includeTrades: false,
+        })
+
+        setContextStatus(context.status)
+        setUserProfile(context.userProfile)
+        setAccount(context.account)
+      } catch (err) {
+        console.error("Failed to load settings page:", err)
+        setError("Failed to load settings data.")
+      } finally {
+        setLoading(false)
+      }
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  const profileItems = useMemo(
+    () => [
+      { label: "Full Name", value: userProfile?.displayName || auth.currentUser?.displayName || "Not set" },
+      { label: "Email Address", value: userProfile?.email || auth.currentUser?.email || "—" },
+      { label: "Role", value: userProfile?.role || "user" },
+      { label: "Time Zone", value: Intl.DateTimeFormat().resolvedOptions().timeZone || "—" },
+    ],
+    [userProfile],
+  )
 
   const preferences = [
-    { title: "Email Notifications", status: "Enabled" },
-    { title: "Tournament Alerts", status: "Enabled" },
-    { title: "Payout Updates", status: "Enabled" },
+    { title: "Email Notifications", status: "Coming Soon" },
+    { title: "Tournament Alerts", status: "Coming Soon" },
+    { title: "Payout Updates", status: "Coming Soon" },
     { title: "Dark Mode Theme", status: "Active" },
   ]
 
   const security = [
-    { title: "Password", status: "Last updated 14 days ago" },
-    { title: "Two-Step Verification", status: "Not enabled" },
-    { title: "Login Activity", status: "No unusual activity" },
-    { title: "Session Devices", status: "2 active sessions" },
+    { title: "Firebase Auth", status: auth.currentUser ? "Signed in" : "Signed out" },
+    { title: "Two-Step Verification", status: "Not wired yet" },
+    { title: "Login Session", status: auth.currentUser ? "Active session detected" : "No session" },
+    { title: "Profile Updated", status: formatDateTime(userProfile?.lastChallengeActivatedAtMs) },
   ]
 
   const linkedAccess = [
-    { title: "Discord Access", status: "Connected" },
-    { title: "Affiliate Profile", status: "Enabled" },
-    { title: "Reward Tier Sync", status: "Active" },
-    { title: "Tournament Eligibility", status: "Approved" },
+    { title: "Active Account ID", status: userProfile?.activeAccountId || "None" },
+    { title: "Selected Plan", status: account?.planName || "None" },
+    { title: "Account Status", status: getAccountDisplayStatus(account) },
+    { title: "Account Phase", status: account?.phase || "—" },
   ]
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] text-white">
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+          <div className="animate-pulse space-y-4">
+            <div className="h-5 w-40 rounded bg-white/10" />
+            <div className="h-10 w-72 rounded bg-white/10" />
+            <div className="grid gap-6 xl:grid-cols-2">
+              <div className="h-64 rounded-2xl bg-white/5" />
+              <div className="h-64 rounded-2xl bg-white/5" />
+            </div>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] text-white">
+        <section className="rounded-2xl border border-red-500/20 bg-red-500/10 p-6">
+          <h1 className="text-2xl font-semibold text-red-300">Settings failed to load</h1>
+          <p className="mt-2 text-sm text-red-100/80">{error}</p>
+        </section>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white">
@@ -37,21 +130,17 @@ export default function SettingsPage() {
                 ⚙️ Account Settings
               </div>
               <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                Manage profile details, preferences, and account controls
+                Manage profile details and account-linked settings
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                A clean settings page ties everything together and makes NovaFunded feel like a real
-                platform with profile controls, notification preferences, security sections, and linked
-                account states.
+                This page now reflects your real Firebase profile and selected trading account instead
+                of fake hardcoded settings data.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <button className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-emerald-400">
-                Save Changes
-              </button>
               <button className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10">
-                Export Profile
+                Editing later
               </button>
             </div>
           </div>
@@ -61,7 +150,7 @@ export default function SettingsPage() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <h3 className="text-xl font-semibold">Profile Information</h3>
             <p className="mt-1 text-sm text-white/40">
-              Core account identity and dashboard profile details
+              Live user identity and account details
             </p>
 
             <div className="mt-5 space-y-3">
@@ -80,7 +169,7 @@ export default function SettingsPage() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <h3 className="text-xl font-semibold">Preferences</h3>
             <p className="mt-1 text-sm text-white/40">
-              Notification and platform experience controls
+              UI preferences and future notification switches
             </p>
 
             <div className="mt-5 space-y-3">
@@ -103,7 +192,7 @@ export default function SettingsPage() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <h3 className="text-xl font-semibold">Security</h3>
             <p className="mt-1 text-sm text-white/40">
-              Account safety and sign-in visibility
+              Current auth and account session visibility
             </p>
 
             <div className="mt-5 space-y-3">
@@ -116,9 +205,9 @@ export default function SettingsPage() {
                     <p className="text-sm font-medium">{item.title}</p>
                     <p className="mt-1 text-xs text-white/40">{item.status}</p>
                   </div>
-                  <button className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-white transition hover:bg-white/10">
-                    Manage
-                  </button>
+                  <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-white">
+                    View
+                  </span>
                 </div>
               ))}
             </div>
@@ -127,7 +216,7 @@ export default function SettingsPage() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <h3 className="text-xl font-semibold">Linked Access</h3>
             <p className="mt-1 text-sm text-white/40">
-              Connected platform features and eligibility states
+              Connected account and dashboard state
             </p>
 
             <div className="mt-5 space-y-3">
@@ -149,22 +238,22 @@ export default function SettingsPage() {
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
           <h3 className="text-xl font-semibold">Quick Account Actions</h3>
           <p className="mt-1 text-sm text-white/40">
-            Final settings controls to round out the dashboard
+            Clean placeholders until editing controls are wired in
           </p>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {[
-              "Update Profile",
-              "Change Password",
-              "Manage Alerts",
-              "Review Sessions",
+              "Update profile later",
+              "Add password flow later",
+              "Add real alerts later",
+              `Context status: ${contextStatus || "unknown"}`,
             ].map((item) => (
-              <button
+              <div
                 key={item}
-                className="rounded-2xl border border-white/10 bg-black/20 p-4 text-left text-sm font-medium text-white transition hover:bg-white/5"
+                className="rounded-2xl border border-white/10 bg-black/20 p-4 text-left text-sm font-medium text-white"
               >
                 {item}
-              </button>
+              </div>
             ))}
           </div>
         </section>

@@ -1,43 +1,148 @@
+"use client"
+
+import { useEffect, useMemo, useState } from "react"
+import { onAuthStateChanged } from "firebase/auth"
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore"
+import { auth } from "@/lib/firebase"
+import { db } from "@/lib/firebase"
+import {
+  loadTradingContext,
+  type AccountData,
+  type TradeRecord,
+  type UserProfile,
+} from "@/lib/tradingAccount"
+
+function formatMoney(value: number) {
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+function formatDate(value?: number | null) {
+  if (!value) return "—"
+
+  return new Date(value).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
+
+function addThirtyDays(timestampMs?: number | null) {
+  if (!timestampMs) return null
+  return timestampMs + 30 * 24 * 60 * 60 * 1000
+}
+
 export default function BillingPage() {
-  const billingStats = [
-    {
-      label: "Active Plan",
-      value: "NovaFunded Prime",
-      subtext: "Professional funded trader access",
-      tone: "neutral",
-    },
-    {
-      label: "Next Renewal",
-      value: "Apr 28, 2026",
-      subtext: "Auto-renewal currently enabled",
-      tone: "neutral",
-    },
-    {
-      label: "Total Spend",
-      value: "$1,187.00",
-      subtext: "Across evaluations and upgrades",
-      tone: "positive",
-    },
-    {
-      label: "Payment Status",
-      value: "In Good Standing",
-      subtext: "No failed invoices or past due items",
-      tone: "positive",
-    },
-  ]
+  const [loading, setLoading] = useState(true)
+  const [contextStatus, setContextStatus] = useState("")
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [account, setAccount] = useState<AccountData | null>(null)
+  const [trades, setTrades] = useState<TradeRecord[]>([])
+  const [accountCount, setAccountCount] = useState(0)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setUserProfile(null)
+        setAccount(null)
+        setTrades([])
+        setAccountCount(0)
+        setContextStatus("signed_out")
+        setLoading(false)
+        return
+      }
+
+      setLoading(true)
+      setError("")
+
+      try {
+        const context = await loadTradingContext(user.uid, {
+          includeTrades: true,
+          tradeLimit: 200,
+        })
+
+        setContextStatus(context.status)
+        setUserProfile(context.userProfile)
+        setAccount(context.account)
+        setTrades(context.trades)
+
+        const accountsSnap = await getDocs(
+          query(collection(db, "accounts"), where("userId", "==", user.uid)),
+        )
+
+        setAccountCount(accountsSnap.size)
+      } catch (err) {
+        console.error("Failed to load billing page:", err)
+        setError("Failed to load billing data.")
+      } finally {
+        setLoading(false)
+      }
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  const activeAccounts = accountCount
+  const monthlyTotal = activeAccounts * 11
+  const totalClosedTrades = trades.filter((trade) => trade.status === "closed").length
+  const lastActivatedAtMs =
+    account?.activatedAtMs ??
+    userProfile?.lastChallengeActivatedAtMs ??
+    null
+
+  const nextRenewal = addThirtyDays(lastActivatedAtMs)
+  const hasAccount = !!account
+
+  const billingStats = useMemo(
+    () => [
+      {
+        label: "Per Account Price",
+        value: "$11.00",
+        subtext: "Base monthly platform fee per account",
+        tone: "positive",
+      },
+      {
+        label: "Active Accounts",
+        value: String(activeAccounts),
+        subtext: activeAccounts === 1 ? "1 account currently linked" : `${activeAccounts} accounts currently linked`,
+        tone: "neutral",
+      },
+      {
+        label: "Monthly Total",
+        value: formatMoney(monthlyTotal),
+        subtext: "$11 × account count",
+        tone: "positive",
+      },
+      {
+        label: "Billing Status",
+        value: hasAccount ? "Active" : "No Active Account",
+        subtext: hasAccount ? "Ready for future live Stripe sync" : "Create or activate an account first",
+        tone: hasAccount ? "positive" : "neutral",
+      },
+    ],
+    [activeAccounts, monthlyTotal, hasAccount],
+  )
 
   const currentPlan = [
     {
-      title: "Account Type",
-      value: "$100,000 Evaluation",
+      title: "Selected Account",
+      value: account?.planName ?? "—",
     },
     {
-      title: "Platform Access",
-      value: "Prime Dashboard",
+      title: "Phase",
+      value: account?.phase ?? "—",
     },
     {
-      title: "Profit Split Tier",
-      value: "Up to 90%",
+      title: "Account Status",
+      value: account?.status ?? "—",
     },
     {
       title: "Billing Cycle",
@@ -45,79 +150,68 @@ export default function BillingPage() {
     },
   ]
 
-  const paymentMethods = [
+  const invoiceRows = [
     {
-      type: "Visa ending in 4242",
-      status: "Primary",
-      expires: "08/28",
-    },
-    {
-      type: "USDT Wallet",
-      status: "Backup",
-      expires: "Active",
-    },
-  ]
-
-  const invoices = [
-    {
-      id: "INV-20418",
-      date: "Mar 28, 2026",
-      description: "NovaFunded Prime Monthly Access",
-      amount: "$87.00",
-      status: "Paid",
-    },
-    {
-      id: "INV-20311",
-      date: "Feb 28, 2026",
-      description: "$100,000 Evaluation Purchase",
-      amount: "$249.00",
-      status: "Paid",
-    },
-    {
-      id: "INV-20244",
-      date: "Feb 14, 2026",
-      description: "Add-on: Fast Track Upgrade",
-      amount: "$59.00",
-      status: "Paid",
-    },
-    {
-      id: "INV-20197",
-      date: "Jan 28, 2026",
-      description: "NovaFunded Prime Monthly Access",
-      amount: "$87.00",
-      status: "Paid",
-    },
-    {
-      id: "INV-20110",
-      date: "Jan 03, 2026",
-      description: "$50,000 Challenge Purchase",
-      amount: "$169.00",
-      status: "Paid",
+      id: account?.id ? `INV-${account.id.slice(-6).toUpperCase()}` : "INV-PREVIEW",
+      date: nextRenewal ? formatDate(nextRenewal) : "—",
+      description: activeAccounts > 0 ? `NovaFunded account billing (${activeAccounts} account${activeAccounts === 1 ? "" : "s"})` : "No active account billing yet",
+      amount: formatMoney(monthlyTotal),
+      status: hasAccount ? "Projected" : "Pending",
     },
   ]
 
   const recentActivity = [
     {
-      title: "Latest invoice paid successfully",
-      time: "Mar 28, 2026",
-      desc: "Your monthly NovaFunded Prime access fee was processed without interruption.",
+      title: "Billing model synced to account count",
+      time: "Live",
+      desc: "This page now calculates monthly billing from your real Firestore account count at $11 per account.",
     },
     {
-      title: "Primary card updated",
-      time: "Mar 12, 2026",
-      desc: "Your account payment method was refreshed and remains set as the default billing source.",
+      title: "Selected account linked",
+      time: formatDate(lastActivatedAtMs),
+      desc: hasAccount
+        ? `Your current dashboard is linked to ${account?.planName ?? "your active account"}.`
+        : "No active account is currently attached to this profile.",
     },
     {
-      title: "Evaluation purchase recorded",
-      time: "Feb 28, 2026",
-      desc: "A new $100,000 evaluation was added to your billing history and linked to your dashboard access.",
-    },
-    {
-      title: "Billing profile verified",
-      time: "Feb 10, 2026",
-      desc: "Your account remains in good standing with no disputes, overdue invoices, or payment flags.",
+      title: "Next billing placeholder ready",
+      time: nextRenewal ? formatDate(nextRenewal) : "—",
+      desc: "Once you connect full Stripe subscription logic later, this section can swap from projected values to real invoices automatically.",
     },
   ]
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] text-white">
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+          <div className="animate-pulse space-y-4">
+            <div className="h-5 w-40 rounded bg-white/10" />
+            <div className="h-10 w-80 rounded bg-white/10" />
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="rounded-2xl border border-white/10 bg-black/20 p-5">
+                  <div className="h-4 w-24 rounded bg-white/10" />
+                  <div className="mt-3 h-8 w-28 rounded bg-white/10" />
+                  <div className="mt-3 h-4 w-36 rounded bg-white/10" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] text-white">
+        <section className="rounded-2xl border border-red-500/20 bg-red-500/10 p-6">
+          <h1 className="text-2xl font-semibold text-red-300">Billing failed to load</h1>
+          <p className="mt-2 text-sm text-red-100/80">{error}</p>
+        </section>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white">
@@ -129,21 +223,17 @@ export default function BillingPage() {
                 💳 Billing & Plans
               </div>
               <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                Manage your plan, invoices, and challenge purchases
+                Manage account billing and platform charges
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                This billing area makes NovaFunded feel like a real paid prop firm platform with
-                active plan management, invoice history, stored payment methods, and subscription-style
-                controls.
+                Billing is now synced to your real Firestore account count. NovaFunded currently charges
+                $11 per account, with totals updating from your linked account records.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <button className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-emerald-400">
-                Upgrade Plan
-              </button>
               <button className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10">
-                Download Invoices
+                Stripe sync later
               </button>
             </div>
           </div>
@@ -172,28 +262,28 @@ export default function BillingPage() {
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <div className="mb-5 flex items-center justify-between">
               <div>
-                <h3 className="text-xl font-semibold">Current Plan Overview</h3>
+                <h3 className="text-xl font-semibold">Current Billing Overview</h3>
                 <p className="mt-1 text-sm text-white/40">
-                  Active subscription and challenge profile details
+                  Based on your actual account records
                 </p>
               </div>
               <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-400">
-                ✅ Active
+                {hasAccount ? "✅ Active" : "⏳ Pending"}
               </span>
             </div>
 
             <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-5">
               <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
                 <div>
-                  <p className="text-sm text-emerald-400">NovaFunded Prime</p>
-                  <h2 className="mt-2 text-2xl font-semibold">$87/month</h2>
+                  <p className="text-sm text-emerald-400">NovaFunded Account Billing</p>
+                  <h2 className="mt-2 text-2xl font-semibold">{formatMoney(monthlyTotal)}/month</h2>
                   <p className="mt-2 max-w-xl text-sm leading-6 text-white/70">
-                    Premium dashboard access, prop-firm style analytics, payout tracking,
-                    certificates, tournament participation, and challenge management.
+                    Billing is calculated at $11 per account. As you add more funded or evaluation
+                    accounts later, this total can scale automatically from Firestore.
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-2 text-sm text-white/70">
-                  Next bill: Apr 28, 2026
+                  Next bill: {nextRenewal ? formatDate(nextRenewal) : "—"}
                 </div>
               </div>
             </div>
@@ -213,38 +303,40 @@ export default function BillingPage() {
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
             <div className="mb-5">
-              <h3 className="text-xl font-semibold">Saved Payment Methods</h3>
+              <h3 className="text-xl font-semibold">Billing Summary</h3>
               <p className="mt-1 text-sm text-white/40">
-                Clean payment UI for a more believable platform experience
+                Simple live numbers instead of fake subscription data
               </p>
             </div>
 
             <div className="space-y-3">
-              {paymentMethods.map((item) => (
-                <div
-                  key={item.type}
-                  className="rounded-2xl border border-white/10 bg-black/20 p-4"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">{item.type}</p>
-                      <p className="mt-1 text-sm text-white/50">Expires / Status: {item.expires}</p>
-                    </div>
-                    <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/60">
-                      {item.status}
-                    </span>
-                  </div>
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Signed-in Email</p>
+                  <p className="text-sm font-medium">{userProfile?.email || auth.currentUser?.email || "—"}</p>
                 </div>
-              ))}
-            </div>
+              </div>
 
-            <div className="mt-4 flex gap-3">
-              <button className="rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-emerald-400">
-                Add Method
-              </button>
-              <button className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10">
-                Edit Billing
-              </button>
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Active Account ID</p>
+                  <p className="text-sm font-medium">{userProfile?.activeAccountId || "—"}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Closed Trades</p>
+                  <p className="text-sm font-medium">{totalClosedTrades}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-white/60">Plan Price Model</p>
+                  <p className="text-sm font-medium">$11 / account</p>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -252,18 +344,18 @@ export default function BillingPage() {
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
           <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h3 className="text-xl font-semibold">Invoice History</h3>
+              <h3 className="text-xl font-semibold">Invoice Preview</h3>
               <p className="mt-1 text-sm text-white/40">
-                Previous plan renewals, challenge purchases, and upgrades
+                Placeholder until full Stripe invoice syncing is added
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2 text-xs text-white/50">
               <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                100% paid on time
+                Real account-linked totals
               </span>
               <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">
-                No disputed charges
+                Stripe-ready later
               </span>
             </div>
           </div>
@@ -280,7 +372,7 @@ export default function BillingPage() {
                 </tr>
               </thead>
               <tbody>
-                {invoices.map((item) => (
+                {invoiceRows.map((item) => (
                   <tr
                     key={item.id}
                     className="border-b border-white/5 text-sm text-white/80 transition hover:bg-white/5"
@@ -306,26 +398,25 @@ export default function BillingPage() {
             <div className="mb-5">
               <h3 className="text-xl font-semibold">Billing Controls</h3>
               <p className="mt-1 text-sm text-white/40">
-                Premium-looking account management actions
+                Kept clean for now until full payments are wired in
               </p>
             </div>
 
             <div className="space-y-3">
               {[
-                "Change active plan",
-                "Update billing email",
-                "Download invoice archive",
-                "Pause renewal reminders",
-                "Review purchase history",
+                "Add more accounts to increase platform billing total",
+                "Wire real Stripe subscription renewal later",
+                "Attach invoice download logic later",
+                "Add plan tiers when more account packages launch",
               ].map((item) => (
                 <div
                   key={item}
                   className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 p-4"
                 >
                   <p className="text-sm text-white/70">{item}</p>
-                  <button className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-white transition hover:bg-white/10">
-                    Manage
-                  </button>
+                  <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-white">
+                    Pending
+                  </span>
                 </div>
               ))}
             </div>
@@ -335,7 +426,7 @@ export default function BillingPage() {
             <div className="mb-5">
               <h3 className="text-xl font-semibold">Recent Billing Activity</h3>
               <p className="mt-1 text-sm text-white/40">
-                Live-style platform updates for your billing profile
+                Synced account-side updates
               </p>
             </div>
 

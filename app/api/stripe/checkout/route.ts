@@ -50,6 +50,7 @@ export async function POST(req: Request) {
           quantity: 1,
         },
       ],
+      allow_promotion_codes: true,
       customer_email: email,
       metadata: {
         userId,

@@ -109,12 +109,22 @@ function mapAccountDoc(
   uid: string,
   data: Record<string, unknown>,
 ): AccountData {
+  const status =
+    typeof data.status === "string" && data.status.trim() !== ""
+      ? data.status
+      : "active"
+
+  const breached =
+    typeof data.breached === "boolean"
+      ? data.breached
+      : status.trim().toLowerCase() === "breached"
+
   return {
     id: accountId,
     userId: typeof data.userId === "string" ? data.userId : uid,
     planName: typeof data.planName === "string" ? data.planName : "Flash 5K",
     phase: normalizePhase(data.phase),
-    status: typeof data.status === "string" ? data.status : "active",
+    status,
     startBalance: typeof data.startBalance === "number" ? data.startBalance : 5000,
     balance: typeof data.balance === "number" ? data.balance : 5000,
     equity: typeof data.equity === "number" ? data.equity : 5000,
@@ -122,7 +132,7 @@ function mapAccountDoc(
     dailyLossLimit: typeof data.dailyLossLimit === "number" ? data.dailyLossLimit : 250,
     closedTrades: typeof data.closedTrades === "number" ? data.closedTrades : 0,
     tradingDays: typeof data.tradingDays === "number" ? data.tradingDays : 0,
-    breached: typeof data.breached === "boolean" ? data.breached : false,
+    breached,
     activatedAtMs: readTimestampMs(data.activatedAt),
   }
 }
@@ -131,9 +141,16 @@ function mapTradeDoc(
   tradeId: string,
   data: Record<string, unknown>,
 ): TradeRecord {
+  const requestedEntry =
+    typeof data.requestedEntry === "number"
+      ? data.requestedEntry
+      : typeof data.entry === "number"
+        ? data.entry
+        : 0
+
   return {
     id: tradeId,
-    symbol: typeof data.symbol === "string" ? data.symbol : "XAUUSD",
+    symbol: typeof data.symbol === "string" ? data.symbol : "BTCUSD",
     side: data.side === "sell" ? "sell" : "buy",
     orderType: data.orderType === "limit" ? "limit" : "market",
     status:
@@ -143,15 +160,10 @@ function mapTradeDoc(
       data.status === "cancelled"
         ? data.status
         : "closed",
-    requestedEntry:
-      typeof data.requestedEntry === "number"
-        ? data.requestedEntry
-        : typeof data.entry === "number"
-          ? data.entry
-          : 0,
+    requestedEntry,
     entry: typeof data.entry === "number" ? data.entry : null,
-    useStopLoss: typeof data.useStopLoss === "boolean" ? data.useStopLoss : true,
-    useTakeProfit: typeof data.useTakeProfit === "boolean" ? data.useTakeProfit : true,
+    useStopLoss: typeof data.useStopLoss === "boolean" ? data.useStopLoss : false,
+    useTakeProfit: typeof data.useTakeProfit === "boolean" ? data.useTakeProfit : false,
     stopLoss: typeof data.stopLoss === "number" ? data.stopLoss : null,
     takeProfit: typeof data.takeProfit === "number" ? data.takeProfit : null,
     size: typeof data.size === "number" ? data.size : 1,
@@ -189,6 +201,8 @@ export function getAccountDisplayStatus(account: AccountData | null) {
   if (normalized === "passed") return "Passed"
   if (normalized === "breached") return "Breached"
   if (normalized === "locked") return "Locked"
+  if (normalized === "funded") return "Funded"
+  if (normalized === "active-funded") return "Funded"
   if (normalized === "active") return "Active"
 
   return account.status
@@ -242,6 +256,7 @@ export function syncTradeAccountSnapshot(account: AccountData | null) {
       planName: account.planName,
       phase: account.phase,
       accountId: account.id,
+      breached: account.breached,
     }),
   )
 
@@ -249,61 +264,95 @@ export function syncTradeAccountSnapshot(account: AccountData | null) {
 }
 
 async function getFallbackAccountForUser(uid: string): Promise<AccountData | null> {
-  const byActivation = await getDocs(
+  const attempts = [
     query(
       collection(db, "accounts"),
       where("userId", "==", uid),
       orderBy("activatedAt", "desc"),
       limit(1),
     ),
-  )
-
-  if (!byActivation.empty) {
-    const docSnap = byActivation.docs[0]
-    return mapAccountDoc(
-      docSnap.id,
-      uid,
-      docSnap.data() as Record<string, unknown>,
-    )
-  }
-
-  const byCreatedMs = await getDocs(
     query(
       collection(db, "accounts"),
       where("userId", "==", uid),
       orderBy("createdAtMs", "desc"),
       limit(1),
     ),
-  )
-
-  if (!byCreatedMs.empty) {
-    const docSnap = byCreatedMs.docs[0]
-    return mapAccountDoc(
-      docSnap.id,
-      uid,
-      docSnap.data() as Record<string, unknown>,
-    )
-  }
-
-  const byCreatedAt = await getDocs(
     query(
       collection(db, "accounts"),
       where("userId", "==", uid),
       orderBy("createdAt", "desc"),
       limit(1),
     ),
-  )
+  ]
 
-  if (!byCreatedAt.empty) {
-    const docSnap = byCreatedAt.docs[0]
-    return mapAccountDoc(
-      docSnap.id,
-      uid,
-      docSnap.data() as Record<string, unknown>,
+  for (const attempt of attempts) {
+    try {
+      const snap = await getDocs(attempt)
+      if (!snap.empty) {
+        const docSnap = snap.docs[0]
+        return mapAccountDoc(
+          docSnap.id,
+          uid,
+          docSnap.data() as Record<string, unknown>,
+        )
+      }
+    } catch {
+      // keep trying the next fallback query
+    }
+  }
+
+  try {
+    const looseSnap = await getDocs(
+      query(collection(db, "accounts"), where("userId", "==", uid), limit(10)),
     )
+
+    if (!looseSnap.empty) {
+      const docs = looseSnap.docs
+        .map((docSnap) =>
+          mapAccountDoc(docSnap.id, uid, docSnap.data() as Record<string, unknown>),
+        )
+        .sort((a, b) => (b.activatedAtMs ?? 0) - (a.activatedAtMs ?? 0))
+
+      return docs[0] ?? null
+    }
+  } catch {
+    return null
   }
 
   return null
+}
+
+async function loadTradesForAccount(accountId: string, tradeLimit: number) {
+  const attempts = [
+    query(
+      collection(db, "trades"),
+      where("accountId", "==", accountId),
+      orderBy("createdAtMs", "desc"),
+      limit(tradeLimit),
+    ),
+    query(
+      collection(db, "trades"),
+      where("accountId", "==", accountId),
+      orderBy("createdAt", "desc"),
+      limit(tradeLimit),
+    ),
+    query(collection(db, "trades"), where("accountId", "==", accountId), limit(tradeLimit)),
+  ]
+
+  for (const attempt of attempts) {
+    try {
+      const snap = await getDocs(attempt)
+      return snap.docs
+        .map((tradeDoc) =>
+          mapTradeDoc(tradeDoc.id, tradeDoc.data() as Record<string, unknown>),
+        )
+        .sort((a, b) => (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0))
+    } catch {
+      // try next
+    }
+  }
+
+  return []
 }
 
 export async function loadTradingContext(
@@ -371,24 +420,13 @@ export async function loadTradingContext(
     }
   }
 
-  let trades: TradeRecord[] = []
+  const trades = includeTrades ? await loadTradesForAccount(account.id, tradeLimit) : []
 
-  if (includeTrades) {
-    const tradesSnap = await getDocs(
-      query(
-        collection(db, "trades"),
-        where("accountId", "==", account.id),
-        orderBy("createdAtMs", "desc"),
-        limit(tradeLimit),
-      ),
-    )
-
-    trades = tradesSnap.docs.map((tradeDoc) =>
-      mapTradeDoc(tradeDoc.id, tradeDoc.data() as Record<string, unknown>),
-    )
-  }
-
-  syncTradeAccountSnapshot(account)
+  syncTradeAccountSnapshot({
+    ...account,
+    closedTrades:
+      trades.filter((trade) => trade.status === "closed").length || account.closedTrades,
+  })
 
   return {
     status: "ready",

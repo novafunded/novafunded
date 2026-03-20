@@ -15,7 +15,6 @@ function getMilestoneTone(status: TradingMilestone["status"]) {
   if (status === "complete") {
     return {
       badge: "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
-      text: "text-emerald-400",
       label: "Met",
     }
   }
@@ -23,14 +22,12 @@ function getMilestoneTone(status: TradingMilestone["status"]) {
   if (status === "blocked") {
     return {
       badge: "border border-red-500/20 bg-red-500/10 text-red-300",
-      text: "text-red-300",
       label: "Blocked",
     }
   }
 
   return {
     badge: "border border-amber-500/20 bg-amber-500/10 text-amber-300",
-    text: "text-amber-300",
     label: "Pending",
   }
 }
@@ -59,7 +56,7 @@ export default function PayoutsPage() {
       try {
         const next = await loadTradingContext(user.uid, {
           includeTrades: true,
-          tradeLimit: 300,
+          tradeLimit: 500,
         })
 
         setContext(next)
@@ -88,7 +85,7 @@ export default function PayoutsPage() {
         label: "Available for Withdrawal",
         value: formatMoney(metrics.availableWithdrawal),
         subtext: metrics.payoutEligible
-          ? "Unlocked after all strict payout rules passed"
+          ? "Unlocked after all strict payout rules pass"
           : "Locked until every payout milestone is met",
         tone: metrics.payoutEligible ? "positive" : "neutral",
       },
@@ -214,8 +211,8 @@ export default function PayoutsPage() {
                 Strict payout eligibility
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                Payout readiness is now based on strict real account rules from Firestore and trade
-                history. No fake percentages and no soft frontend-only calculations.
+                Payout readiness is based on the real account record and real trade history. No fake
+                percentages and no placeholder payout progress.
               </p>
             </div>
 
@@ -312,7 +309,7 @@ export default function PayoutsPage() {
                   />
                 </div>
                 <div className="mt-2 flex items-center justify-between text-xs text-white/40">
-                  <span>{metrics.payoutBlockedReason ?? "All payout checks currently passing"}</span>
+                  <span>{metrics.payoutReadinessLabel}</span>
                   <span>{metrics.payoutReadinessPercent}%</span>
                 </div>
               </div>
@@ -566,7 +563,7 @@ export default function PayoutsPage() {
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-white/60">Current Compliance Flag</p>
                   <p className="text-sm font-medium">
-                    {context.account.breached ? "Breached" : "None"}
+                    {metrics.accountInGoodStanding ? "None" : "Breached / Blocked"}
                   </p>
                 </div>
               </div>

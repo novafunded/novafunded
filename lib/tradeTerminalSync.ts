@@ -47,6 +47,7 @@ export async function syncTerminalState({
   status,
 }: SyncTerminalStateParams) {
   const batch = writeBatch(db)
+  const now = Date.now()
 
   const accountRef = doc(db, "accounts", account.id)
   batch.set(
@@ -56,8 +57,8 @@ export async function syncTerminalState({
       planName: account.planName,
       phase: account.phase,
       startBalance: account.startBalance,
-      balance,
-      equity,
+      balance: Number(balance.toFixed(2)),
+      equity: Number(equity.toFixed(2)),
       maxLossLimit: account.maxLossLimit,
       dailyLossLimit: account.dailyLossLimit,
       closedTrades,
@@ -65,7 +66,7 @@ export async function syncTerminalState({
       breached,
       status,
       activatedAt: account.activatedAtMs ?? null,
-      updatedAtMs: Date.now(),
+      updatedAtMs: now,
     },
     { merge: true },
   )
@@ -92,10 +93,10 @@ export async function syncTerminalState({
         openedAtMs: trade.openedAt,
         closedAtMs: trade.closedAt,
         closePrice: trade.closePrice,
-        pnl: trade.pnl,
+        pnl: Number(trade.pnl.toFixed(2)),
         closeReason: trade.closeReason ?? null,
         createdAtMs: trade.createdAt,
-        updatedAtMs: Date.now(),
+        updatedAtMs: now,
       },
       { merge: true },
     )

@@ -64,7 +64,7 @@ export default function CertificatesPage() {
       try {
         const context = await loadTradingContext(user.uid, {
           includeTrades: true,
-          tradeLimit: 300,
+          tradeLimit: 500,
         })
 
         setContextStatus(context.status)
@@ -153,7 +153,7 @@ export default function CertificatesPage() {
     {
       title: "Certificate records synced",
       time: "Live",
-      desc: "Records on this page are now derived from actual account fields and trade history instead of placeholder certificate logic.",
+      desc: "Records on this page are derived from actual account fields and trade history instead of placeholder certificate logic.",
     },
     {
       title: "Verification logic hardened",
@@ -163,7 +163,7 @@ export default function CertificatesPage() {
     {
       title: "Milestone progress recalculated",
       time: "Live",
-      desc: "Achievement progress is now based on real account activation, pass state, closed trades, trading days, and profit.",
+      desc: "Achievement progress is based on real account activation, pass state, closed trades, trading days, and profit.",
     },
   ]
 
@@ -205,7 +205,7 @@ export default function CertificatesPage() {
                 Real certificate records only
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                Verified states, issue dates, and achievement progress now come from real account
+                Verified states, issue dates, and achievement progress come from real account
                 activation, status, and trade history. No placeholder verification and no fake dates.
               </p>
             </div>
@@ -250,8 +250,8 @@ export default function CertificatesPage() {
                   Achievement progress based on actual milestones
                 </h2>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-white/60 md:text-base">
-                  This progress bar does not guess. It only moves when real account activation,
-                  pass/funded state, trade count, trading days, and profit milestones are actually met.
+                  This progress only moves when real account activation, pass or funded state, trade
+                  count, trading days, and profit milestones are actually met.
                 </p>
               </div>
 

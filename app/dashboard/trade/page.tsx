@@ -1,7 +1,22 @@
 "use client"
 
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { onAuthStateChanged } from "firebase/auth"
+import { auth } from "@/lib/firebase"
 import TradingViewChart from "@/components/dashboard/TradingViewChart"
+import {
+  getAccountDisplayStatus,
+  isTradingLocked,
+  loadTradingContext,
+  syncTradeAccountSnapshot,
+  type AccountData,
+  type TradeRecord,
+} from "@/lib/tradingAccount"
+import { deriveTradingMetrics, getTradingDaysFromTrades } from "@/lib/tradingMetrics"
+import {
+  syncTerminalState,
+  type TerminalTradeSnapshot,
+} from "@/lib/tradeTerminalSync"
 
 type OrderSide = "buy" | "sell"
 
@@ -15,25 +30,8 @@ const SYMBOLS = {
 
 type SymbolKey = keyof typeof SYMBOLS
 
-type OpenPosition = {
-  id: string
-  symbol: SymbolKey
-  side: OrderSide
-  size: number
-  entryPrice: number
-  openedAtMs: number
-}
-
-type ClosedPosition = {
-  id: string
-  symbol: SymbolKey
-  side: OrderSide
-  size: number
-  entryPrice: number
-  closePrice: number
-  pnl: number
-  openedAtMs: number
-  closedAtMs: number
+function round2(value: number) {
+  return Number(value.toFixed(2))
 }
 
 function formatPrice(value: number, symbol: SymbolKey) {
@@ -74,13 +72,38 @@ function roundPriceForSymbol(value: number, symbol: SymbolKey) {
   return Math.round(value / step) * step
 }
 
-function calculatePnl(position: OpenPosition, livePrice: number) {
+function calculatePnl(
+  trade: TerminalTradeSnapshot,
+  livePrice: number,
+) {
+  const entry = trade.entry ?? trade.requestedEntry ?? 0
   const delta =
-    position.side === "buy"
-      ? livePrice - position.entryPrice
-      : position.entryPrice - livePrice
+    trade.side === "buy" ? livePrice - entry : entry - livePrice
 
-  return delta * position.size
+  return round2(delta * trade.size)
+}
+
+function mapTradeRecordToTerminalTrade(trade: TradeRecord): TerminalTradeSnapshot {
+  return {
+    id: trade.id,
+    symbol: (trade.symbol in SYMBOLS ? trade.symbol : "BTCUSD") as SymbolKey,
+    side: trade.side,
+    orderType: trade.orderType,
+    requestedEntry: trade.requestedEntry,
+    entry: trade.entry,
+    useStopLoss: trade.useStopLoss,
+    useTakeProfit: trade.useTakeProfit,
+    stopLoss: trade.stopLoss,
+    takeProfit: trade.takeProfit,
+    size: trade.size,
+    status: trade.status,
+    openedAt: trade.openedAtMs ?? null,
+    closedAt: trade.closedAtMs ?? null,
+    closePrice: trade.closePrice ?? null,
+    pnl: trade.pnl,
+    closeReason: trade.closeReason,
+    createdAt: trade.createdAtMs ?? Date.now(),
+  }
 }
 
 function StatusPill({
@@ -176,7 +199,7 @@ function TicketField({
 
   return (
     <div className="rounded-md border border-[#182435] bg-[#0a121d] px-3 py-3">
-      <p className="text-[10px] uppercase tracking-[0.18em] text-[#6d8199]">{label}</p>
+      <p className="text-[10px] uppercase tracking-[0.18em] text-[#70839a]">{label}</p>
       <p className={`mt-2 font-mono text-base font-semibold ${valueClass}`}>{value}</p>
     </div>
   )
@@ -212,6 +235,11 @@ function TableCell({
 export default function TradePage() {
   const [symbol, setSymbol] = useState<SymbolKey>("BTCUSD")
   const [size, setSize] = useState(5)
+  const [uid, setUid] = useState<string | null>(null)
+  const [account, setAccount] = useState<AccountData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadedTerminalTrades, setLoadedTerminalTrades] = useState<TerminalTradeSnapshot[]>([])
   const [livePrices, setLivePrices] = useState<Record<SymbolKey, number>>({
     BTCUSD: SYMBOLS.BTCUSD.startPrice,
     XAUUSD: SYMBOLS.XAUUSD.startPrice,
@@ -219,8 +247,82 @@ export default function TradePage() {
     EURUSD: SYMBOLS.EURUSD.startPrice,
     GBPUSD: SYMBOLS.GBPUSD.startPrice,
   })
-  const [openPositions, setOpenPositions] = useState<OpenPosition[]>([])
-  const [closedPositions, setClosedPositions] = useState<ClosedPosition[]>([])
+
+  const hasInitializedPriceRef = useRef(false)
+  const hasHydratedTradesRef = useRef(false)
+  const lastSyncedPayloadRef = useRef("")
+  const syncTimeoutRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setUid(null)
+        setAccount(null)
+        setLoadedTerminalTrades([])
+        setLoading(false)
+        setLoadError("You must be signed in to access the trade terminal.")
+        return
+      }
+
+      try {
+        setUid(user.uid)
+        setLoading(true)
+        setLoadError(null)
+
+        const context = await loadTradingContext(user.uid, {
+          includeTrades: true,
+          tradeLimit: 250,
+        })
+
+        if (context.status !== "ready" || !context.account) {
+          setAccount(null)
+          setLoadedTerminalTrades([])
+          setLoadError("No active trading account was found.")
+          setLoading(false)
+          return
+        }
+
+        const nextAccount = context.account
+        const nextTrades = context.trades.map(mapTradeRecordToTerminalTrade)
+
+        setAccount(nextAccount)
+        setLoadedTerminalTrades(nextTrades)
+
+        if (!hasInitializedPriceRef.current) {
+          setLivePrices((prev) => {
+            const next = { ...prev }
+
+            nextTrades.forEach((trade) => {
+              const tradeSymbol = trade.symbol as SymbolKey
+              const entry = trade.entry ?? trade.requestedEntry
+              if (tradeSymbol in next && typeof entry === "number" && entry > 0) {
+                next[tradeSymbol] = roundPriceForSymbol(entry, tradeSymbol)
+              }
+            })
+
+            return next
+          })
+
+          hasInitializedPriceRef.current = true
+        }
+
+        setLoading(false)
+      } catch (error) {
+        console.error(error)
+        setLoadError("Failed to load your live trading account.")
+        setLoading(false)
+      }
+    })
+
+    return () => unsub()
+  }, [])
+
+  useEffect(() => {
+    if (!account) return
+    if (hasHydratedTradesRef.current) return
+
+    hasHydratedTradesRef.current = true
+  }, [account])
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -245,28 +347,225 @@ export default function TradePage() {
   const meta = SYMBOLS[symbol]
   const livePrice = livePrices[symbol]
 
-  const currentSymbolPositions = useMemo(
-    () => openPositions.filter((position) => position.symbol === symbol),
-    [openPositions, symbol],
+  const openTrades = useMemo(
+    () => loadedTerminalTrades.filter((trade) => trade.status === "open"),
+    [loadedTerminalTrades],
   )
 
-  const openCount = openPositions.length
-  const closedCount = closedPositions.length
+  const closedTrades = useMemo(
+    () => loadedTerminalTrades.filter((trade) => trade.status === "closed"),
+    [loadedTerminalTrades],
+  )
+
+  const pendingTrades = useMemo(
+    () => loadedTerminalTrades.filter((trade) => trade.status === "pending"),
+    [loadedTerminalTrades],
+  )
+
+  const currentSymbolPositions = useMemo(
+    () => openTrades.filter((trade) => trade.symbol === symbol),
+    [openTrades, symbol],
+  )
 
   const openPnlTotal = useMemo(() => {
-    return openPositions.reduce((sum, position) => {
-      const mark = livePrices[position.symbol]
-      return sum + calculatePnl(position, mark)
-    }, 0)
-  }, [openPositions, livePrices])
+    return round2(
+      openTrades.reduce((sum, trade) => {
+        const mark = livePrices[trade.symbol as SymbolKey]
+        return sum + calculatePnl(trade, mark)
+      }, 0),
+    )
+  }, [openTrades, livePrices])
+
+  const realizedClosedPnl = useMemo(() => {
+    return round2(closedTrades.reduce((sum, trade) => sum + trade.pnl, 0))
+  }, [closedTrades])
+
+  const computedBalance = useMemo(() => {
+    if (!account) return 0
+    return round2(account.startBalance + realizedClosedPnl)
+  }, [account, realizedClosedPnl])
+
+  const computedEquity = useMemo(() => {
+    return round2(computedBalance + openPnlTotal)
+  }, [computedBalance, openPnlTotal])
+
+  const computedTradingDays = useMemo(() => {
+    return Math.max(account?.tradingDays ?? 0, getTradingDaysFromTrades(closedTrades))
+  }, [account, closedTrades])
+
+  const maxLossBreach = useMemo(() => {
+    if (!account) return false
+    return computedEquity <= account.startBalance - account.maxLossLimit
+  }, [account, computedEquity])
+
+  const dailyLossBreach = useMemo(() => {
+    if (!account) return false
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const todayStartMs = today.getTime()
+
+    const todayRealized = closedTrades
+      .filter((trade) => (trade.closedAt ?? 0) >= todayStartMs)
+      .reduce((sum, trade) => sum + trade.pnl, 0)
+
+    const todayTotal = todayRealized + openPnlTotal
+    return todayTotal <= -account.dailyLossLimit
+  }, [account, closedTrades, openPnlTotal])
+
+  const computedBreached = useMemo(() => {
+    return !!account && (account.breached || maxLossBreach || dailyLossBreach)
+  }, [account, maxLossBreach, dailyLossBreach])
+
+  const computedStatus = useMemo(() => {
+    if (!account) return "locked"
+    if (computedBreached) return "breached"
+    const normalized = account.status.trim().toLowerCase()
+    if (normalized === "locked") return "locked"
+    return account.status || "active"
+  }, [account, computedBreached])
+
+  const terminalAccountSnapshot = useMemo(() => {
+    if (!account) return null
+
+    return {
+      ...account,
+      balance: computedBalance,
+      equity: computedEquity,
+      closedTrades: closedTrades.length,
+      tradingDays: computedTradingDays,
+      breached: computedBreached,
+      status: computedStatus,
+    }
+  }, [
+    account,
+    computedBalance,
+    computedEquity,
+    closedTrades.length,
+    computedTradingDays,
+    computedBreached,
+    computedStatus,
+  ])
+
+  const derivedMetrics = useMemo(() => {
+    if (!terminalAccountSnapshot) return null
+
+    const normalizedTradeRecords: TradeRecord[] = loadedTerminalTrades.map((trade) => ({
+      id: trade.id,
+      symbol: trade.symbol,
+      side: trade.side,
+      orderType: trade.orderType,
+      status: trade.status,
+      requestedEntry: trade.requestedEntry,
+      entry: trade.entry,
+      useStopLoss: trade.useStopLoss,
+      useTakeProfit: trade.useTakeProfit,
+      stopLoss: trade.stopLoss,
+      takeProfit: trade.takeProfit,
+      size: trade.size,
+      pnl:
+        trade.status === "open"
+          ? calculatePnl(trade, livePrices[trade.symbol as SymbolKey])
+          : trade.pnl,
+      closeReason: trade.closeReason,
+      accountId: terminalAccountSnapshot.id,
+      userId: terminalAccountSnapshot.userId,
+      createdAtMs: trade.createdAt,
+      openedAtMs: trade.openedAt,
+      closedAtMs: trade.closedAt,
+      closePrice: trade.closePrice,
+    }))
+
+    return deriveTradingMetrics(terminalAccountSnapshot, normalizedTradeRecords)
+  }, [terminalAccountSnapshot, loadedTerminalTrades, livePrices])
+
+  const tradeLocked = useMemo(() => {
+    return isTradingLocked(terminalAccountSnapshot)
+  }, [terminalAccountSnapshot])
+
+  useEffect(() => {
+    if (!account || !uid || !terminalAccountSnapshot) return
+
+    syncTradeAccountSnapshot(terminalAccountSnapshot)
+
+    const payload = JSON.stringify({
+      accountId: terminalAccountSnapshot.id,
+      balance: terminalAccountSnapshot.balance,
+      equity: terminalAccountSnapshot.equity,
+      tradingDays: terminalAccountSnapshot.tradingDays,
+      closedTrades: terminalAccountSnapshot.closedTrades,
+      breached: terminalAccountSnapshot.breached,
+      status: terminalAccountSnapshot.status,
+      trades: loadedTerminalTrades.map((trade) => ({
+        id: trade.id,
+        status: trade.status,
+        pnl: trade.pnl,
+        closePrice: trade.closePrice,
+        openedAt: trade.openedAt,
+        closedAt: trade.closedAt,
+      })),
+    })
+
+    if (payload === lastSyncedPayloadRef.current) return
+    lastSyncedPayloadRef.current = payload
+
+    if (syncTimeoutRef.current) {
+      window.clearTimeout(syncTimeoutRef.current)
+    }
+
+    syncTimeoutRef.current = window.setTimeout(() => {
+      syncTerminalState({
+        uid,
+        account,
+        trades: loadedTerminalTrades,
+        balance: terminalAccountSnapshot.balance,
+        equity: terminalAccountSnapshot.equity,
+        tradingDays: terminalAccountSnapshot.tradingDays,
+        closedTrades: terminalAccountSnapshot.closedTrades,
+        breached: terminalAccountSnapshot.breached,
+        status: terminalAccountSnapshot.status,
+      }).catch((error) => {
+        console.error("syncTerminalState failed", error)
+      })
+    }, 500)
+
+    return () => {
+      if (syncTimeoutRef.current) {
+        window.clearTimeout(syncTimeoutRef.current)
+      }
+    }
+  }, [uid, account, loadedTerminalTrades, terminalAccountSnapshot])
+
+  useEffect(() => {
+    if (!account || !computedBreached) return
+
+    const breachOpenTrades = loadedTerminalTrades.filter((trade) => trade.status === "open")
+    if (breachOpenTrades.length === 0) return
+
+    setLoadedTerminalTrades((prev) =>
+      prev.map((trade) => {
+        if (trade.status !== "open") return trade
+
+        const live = livePrices[trade.symbol as SymbolKey]
+        return {
+          ...trade,
+          status: "closed",
+          closeReason: "breach",
+          closePrice: live,
+          closedAt: Date.now(),
+          pnl: calculatePnl(trade, live),
+        }
+      }),
+    )
+  }, [account, computedBreached, livePrices, loadedTerminalTrades])
 
   const chartLow = useMemo(() => {
-    const prices = [livePrice, ...currentSymbolPositions.map((position) => position.entryPrice)]
+    const prices = [livePrice, ...currentSymbolPositions.map((trade) => trade.entry ?? trade.requestedEntry)]
     return Math.min(...prices) * 0.96
   }, [livePrice, currentSymbolPositions])
 
   const chartHigh = useMemo(() => {
-    const prices = [livePrice, ...currentSymbolPositions.map((position) => position.entryPrice)]
+    const prices = [livePrice, ...currentSymbolPositions.map((trade) => trade.entry ?? trade.requestedEntry)]
     return Math.max(...prices) * 1.04
   }, [livePrice, currentSymbolPositions])
 
@@ -279,43 +578,76 @@ export default function TradePage() {
   }
 
   function placeMarketOrder(side: OrderSide) {
+    if (!account || tradeLocked) return
+
     const entryPrice = livePrices[symbol]
-    const newPosition: OpenPosition = {
-      id: `POS-${Date.now()}`,
+    const now = Date.now()
+
+    const newTrade: TerminalTradeSnapshot = {
+      id: `TRD-${now}-${Math.floor(Math.random() * 10000)}`,
       symbol,
       side,
+      orderType: "market",
+      requestedEntry: entryPrice,
+      entry: entryPrice,
+      useStopLoss: false,
+      useTakeProfit: false,
+      stopLoss: null,
+      takeProfit: null,
       size,
-      entryPrice,
-      openedAtMs: Date.now(),
+      status: "open",
+      openedAt: now,
+      closedAt: null,
+      closePrice: null,
+      pnl: 0,
+      createdAt: now,
     }
 
-    setOpenPositions((prev) => [newPosition, ...prev])
+    setLoadedTerminalTrades((prev) => [newTrade, ...prev])
   }
 
   function closePosition(positionId: string) {
-    setOpenPositions((prev) => {
-      const target = prev.find((position) => position.id === positionId)
-      if (!target) return prev
+    setLoadedTerminalTrades((prev) =>
+      prev.map((trade) => {
+        if (trade.id !== positionId || trade.status !== "open") return trade
 
-      const closePrice = livePrices[target.symbol]
-      const pnl = calculatePnl(target, closePrice)
+        const closePrice = livePrices[trade.symbol as SymbolKey]
+        const pnl = calculatePnl(trade, closePrice)
 
-      const closedTrade: ClosedPosition = {
-        id: `TRD-${Date.now()}`,
-        symbol: target.symbol,
-        side: target.side,
-        size: target.size,
-        entryPrice: target.entryPrice,
-        closePrice,
-        pnl,
-        openedAtMs: target.openedAtMs,
-        closedAtMs: Date.now(),
-      }
-
-      setClosedPositions((current) => [closedTrade, ...current])
-      return prev.filter((position) => position.id !== positionId)
-    })
+        return {
+          ...trade,
+          status: "closed",
+          closePrice,
+          closedAt: Date.now(),
+          closeReason: "manual",
+          pnl,
+        }
+      }),
+    )
   }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#060b12] p-4 text-white">
+        <div className="mx-auto max-w-[1680px] rounded-lg border border-[#162131] bg-[#09111b] p-8">
+          Loading trade terminal...
+        </div>
+      </div>
+    )
+  }
+
+  if (loadError || !account || !terminalAccountSnapshot || !derivedMetrics) {
+    return (
+      <div className="min-h-screen bg-[#060b12] p-4 text-white">
+        <div className="mx-auto max-w-[1680px] rounded-lg border border-[#162131] bg-[#09111b] p-8">
+          <h1 className="text-xl font-semibold">Trade terminal unavailable</h1>
+          <p className="mt-2 text-white/65">{loadError ?? "No active account found."}</p>
+        </div>
+      </div>
+    )
+  }
+
+  const displayStatus = getAccountDisplayStatus(terminalAccountSnapshot)
 
   return (
     <div className="min-h-screen bg-[#060b12] p-4 text-white">
@@ -330,7 +662,12 @@ export default function TradePage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <StatusPill tone="positive">Flash 5K</StatusPill>
+              <StatusPill tone={tradeLocked ? "negative" : "positive"}>
+                {terminalAccountSnapshot.planName}
+              </StatusPill>
+              <StatusPill tone={tradeLocked ? "negative" : "neutral"}>
+                {displayStatus}
+              </StatusPill>
               <StatusPill>{symbol}</StatusPill>
               <StatusPill>{meta.label}</StatusPill>
             </div>
@@ -352,9 +689,9 @@ export default function TradePage() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <TerminalStat label="Open" value={String(openCount)} />
-                    <TerminalStat label="Pending" value="0" />
-                    <TerminalStat label="Closed" value={String(closedCount)} />
+                    <TerminalStat label="Open" value={String(openTrades.length)} />
+                    <TerminalStat label="Pending" value={String(pendingTrades.length)} />
+                    <TerminalStat label="Closed" value={String(closedTrades.length)} />
                     <TerminalStat
                       label="Live"
                       value={formatPrice(livePrice, symbol)}
@@ -381,7 +718,9 @@ export default function TradePage() {
                     <p className="mt-2 font-mono text-[28px] font-semibold text-white">
                       {formatPrice(livePrice, symbol)}
                     </p>
-                    <p className="mt-1 text-xs text-white/45">Market orders execute at current in-app live price</p>
+                    <p className="mt-1 text-xs text-white/45">
+                      Market orders execute at the current in-app live price
+                    </p>
                   </div>
                 </div>
 
@@ -394,32 +733,33 @@ export default function TradePage() {
                       style={{ top: `${getLineY(livePrice)}%` }}
                     />
 
-                    {currentSymbolPositions.map((position) => {
-                      const y = getLineY(position.entryPrice)
-                      const pnl = calculatePnl(position, livePrice)
+                    {currentSymbolPositions.map((trade) => {
+                      const entry = trade.entry ?? trade.requestedEntry
+                      const y = getLineY(entry)
+                      const pnl = calculatePnl(trade, livePrice)
                       const pnlPositive = pnl >= 0
 
                       return (
                         <div
-                          key={position.id}
+                          key={trade.id}
                           className="absolute left-0 right-0"
                           style={{ top: `${y}%` }}
                         >
                           <div
                             className={`border-t border-dashed ${
-                              position.side === "buy"
+                              trade.side === "buy"
                                 ? "border-emerald-300/80"
                                 : "border-red-300/80"
                             }`}
                           />
                           <div
                             className={`absolute right-4 top-[-14px] rounded-md border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${
-                              position.side === "buy"
+                              trade.side === "buy"
                                 ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"
                                 : "border-red-400/20 bg-red-500/10 text-red-300"
                             }`}
                           >
-                            {position.side} {formatPrice(position.entryPrice, symbol)} •{" "}
+                            {trade.side} {formatPrice(entry, symbol)} •{" "}
                             <span className={pnlPositive ? "text-emerald-300" : "text-red-300"}>
                               {formatMoney(pnl)}
                             </span>
@@ -439,8 +779,8 @@ export default function TradePage() {
                     </p>
                     <h2 className="mt-1 text-base font-semibold text-white">Active Exposure</h2>
                   </div>
-                  <StatusPill tone={openCount > 0 ? "positive" : "neutral"}>
-                    {openCount > 0 ? `${openCount} Open` : "No Open Trades"}
+                  <StatusPill tone={openTrades.length > 0 ? "positive" : "neutral"}>
+                    {openTrades.length > 0 ? `${openTrades.length} Open` : "No Open Trades"}
                   </StatusPill>
                 </div>
 
@@ -459,7 +799,7 @@ export default function TradePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {openPositions.length === 0 ? (
+                      {openTrades.length === 0 ? (
                         <tr className="border-b border-[#132030] bg-[#08111b]">
                           <td
                             colSpan={8}
@@ -469,35 +809,33 @@ export default function TradePage() {
                           </td>
                         </tr>
                       ) : (
-                        openPositions.map((position) => {
-                          const mark = livePrices[position.symbol]
-                          const pnl = calculatePnl(position, mark)
+                        openTrades.map((trade) => {
+                          const mark = livePrices[trade.symbol as SymbolKey]
+                          const pnl = calculatePnl(trade, mark)
                           const pnlPositive = pnl >= 0
 
                           return (
                             <tr
-                              key={position.id}
+                              key={trade.id}
                               className="border-b border-[#132030] bg-[#08111b]"
                             >
-                              <TableCell tone="muted">{position.id}</TableCell>
-                              <TableCell>{position.symbol}</TableCell>
-                              <TableCell
-                                tone={position.side === "buy" ? "positive" : "negative"}
-                              >
-                                {position.side.toUpperCase()}
+                              <TableCell tone="muted">{trade.id}</TableCell>
+                              <TableCell>{trade.symbol}</TableCell>
+                              <TableCell tone={trade.side === "buy" ? "positive" : "negative"}>
+                                {trade.side.toUpperCase()}
                               </TableCell>
-                              <TableCell>{position.size.toFixed(2)}</TableCell>
+                              <TableCell>{trade.size.toFixed(2)}</TableCell>
                               <TableCell>
-                                {formatPrice(position.entryPrice, position.symbol)}
+                                {formatPrice(trade.entry ?? trade.requestedEntry, trade.symbol as SymbolKey)}
                               </TableCell>
-                              <TableCell>{formatPrice(mark, position.symbol)}</TableCell>
+                              <TableCell>{formatPrice(mark, trade.symbol as SymbolKey)}</TableCell>
                               <TableCell tone={pnlPositive ? "positive" : "negative"}>
                                 {formatMoney(pnl)}
                               </TableCell>
                               <TableCell>
                                 <button
                                   type="button"
-                                  onClick={() => closePosition(position.id)}
+                                  onClick={() => closePosition(trade.id)}
                                   className="rounded-md border border-[#31445e] bg-[#0a1320] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-white/80 transition hover:border-[#445c7d] hover:bg-[#0f1a2a] hover:text-white"
                                 >
                                   Close
@@ -520,7 +858,7 @@ export default function TradePage() {
                     </p>
                     <h2 className="mt-1 text-base font-semibold text-white">Recent Fills</h2>
                   </div>
-                  <StatusPill>{closedCount} Closed</StatusPill>
+                  <StatusPill>{closedTrades.length} Closed</StatusPill>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -538,7 +876,7 @@ export default function TradePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {closedPositions.length === 0 ? (
+                      {closedTrades.length === 0 ? (
                         <tr className="border-b border-[#132030] bg-[#08111b]">
                           <td
                             colSpan={8}
@@ -548,32 +886,31 @@ export default function TradePage() {
                           </td>
                         </tr>
                       ) : (
-                        closedPositions.map((position) => (
+                        closedTrades.map((trade) => (
                           <tr
-                            key={position.id}
+                            key={trade.id}
                             className="border-b border-[#132030] bg-[#08111b]"
                           >
-                            <TableCell tone="muted">{position.id}</TableCell>
-                            <TableCell>{position.symbol}</TableCell>
-                            <TableCell
-                              tone={position.side === "buy" ? "positive" : "negative"}
-                            >
-                              {position.side.toUpperCase()}
+                            <TableCell tone="muted">{trade.id}</TableCell>
+                            <TableCell>{trade.symbol}</TableCell>
+                            <TableCell tone={trade.side === "buy" ? "positive" : "negative"}>
+                              {trade.side.toUpperCase()}
                             </TableCell>
-                            <TableCell>{position.size.toFixed(2)}</TableCell>
+                            <TableCell>{trade.size.toFixed(2)}</TableCell>
                             <TableCell>
-                              {formatPrice(position.entryPrice, position.symbol)}
+                              {formatPrice(trade.entry ?? trade.requestedEntry, trade.symbol as SymbolKey)}
                             </TableCell>
                             <TableCell>
-                              {formatPrice(position.closePrice, position.symbol)}
+                              {formatPrice(
+                                trade.closePrice ?? trade.entry ?? trade.requestedEntry,
+                                trade.symbol as SymbolKey,
+                              )}
                             </TableCell>
-                            <TableCell
-                              tone={position.pnl >= 0 ? "positive" : "negative"}
-                            >
-                              {formatMoney(position.pnl)}
+                            <TableCell tone={trade.pnl >= 0 ? "positive" : "negative"}>
+                              {formatMoney(trade.pnl)}
                             </TableCell>
                             <TableCell tone="muted">
-                              {formatTime(position.closedAtMs)}
+                              {formatTime(trade.closedAt ?? trade.createdAt)}
                             </TableCell>
                           </tr>
                         ))
@@ -633,18 +970,26 @@ export default function TradePage() {
                     <TicketField label="Notional" value={formatMoney(notionalValue)} />
                   </div>
 
+                  {tradeLocked && (
+                    <div className="rounded-md border border-red-400/20 bg-red-500/10 px-3 py-3 text-sm text-red-200">
+                      Trading is locked because this account is {displayStatus.toLowerCase()}.
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => placeMarketOrder("buy")}
-                      className="rounded-md bg-emerald-500 px-4 py-3.5 text-sm font-semibold text-black transition hover:bg-emerald-400"
+                      disabled={tradeLocked}
+                      className="rounded-md bg-emerald-500 px-4 py-3.5 text-sm font-semibold text-black transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Buy Market
                     </button>
                     <button
                       type="button"
                       onClick={() => placeMarketOrder("sell")}
-                      className="rounded-md bg-red-500 px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-red-400"
+                      disabled={tradeLocked}
+                      className="rounded-md bg-red-500 px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Sell Market
                     </button>
@@ -665,16 +1010,34 @@ export default function TradePage() {
                 </div>
 
                 <div className="grid gap-2 p-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                  <TerminalStat label="Balance" value="$5,125.00" />
-                  <TerminalStat label="Equity" value="$5,182.00" />
+                  <TerminalStat
+                    label="Balance"
+                    value={formatMoney(terminalAccountSnapshot.balance).replace("+", "")}
+                  />
+                  <TerminalStat
+                    label="Equity"
+                    value={formatMoney(terminalAccountSnapshot.equity).replace("+", "")}
+                  />
                   <TerminalStat
                     label="Open PnL"
                     value={formatMoney(openPnlTotal)}
                     tone={openPnlTotal >= 0 ? "positive" : "negative"}
                   />
-                  <TerminalStat label="Drawdown Left" value="$318.00" />
-                  <TerminalStat label="Daily Loss Left" value="$143.00" />
-                  <TerminalStat label="Target Progress" value="46%" tone="accent" />
+                  <TerminalStat
+                    label="Drawdown Left"
+                    value={formatMoney(derivedMetrics.drawdownRemaining).replace("+", "")}
+                    tone={derivedMetrics.drawdownRemaining > 0 ? "default" : "negative"}
+                  />
+                  <TerminalStat
+                    label="Daily Loss Left"
+                    value={formatMoney(derivedMetrics.dailyLossRemaining).replace("+", "")}
+                    tone={derivedMetrics.dailyLossRemaining > 0 ? "default" : "negative"}
+                  />
+                  <TerminalStat
+                    label="Payout Progress"
+                    value={`${derivedMetrics.payoutReadinessPercent}%`}
+                    tone="accent"
+                  />
                 </div>
               </section>
             </aside>

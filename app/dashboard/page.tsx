@@ -12,6 +12,7 @@ import {
   isTradingLocked,
   loadTradingContext,
 } from "@/lib/tradingAccount"
+import { deriveTradingMetrics } from "@/lib/tradingMetrics"
 
 function formatMoney(value: number) {
   return new Intl.NumberFormat("en-US", {
@@ -22,7 +23,7 @@ function formatMoney(value: number) {
   }).format(value)
 }
 
-function formatTime(timestamp?: number) {
+function formatTime(timestamp?: number | null) {
   if (!timestamp) return "--"
 
   return new Date(timestamp).toLocaleString("en-US", {
@@ -66,28 +67,28 @@ export default function DashboardPage() {
       try {
         const context = await loadTradingContext(user.uid, {
           includeTrades: true,
-          tradeLimit: 8,
+          tradeLimit: 100,
         })
 
         if (context.status !== "ready" || !context.account) {
-  setAccount(null)
-  setTrades([])
+          setAccount(null)
+          setTrades([])
 
-  if (context.status === "signed_out") {
-    setEmptyState("signed_out")
-  } else if (context.status === "missing_user_profile") {
-    setEmptyState("missing_user_profile")
-  } else if (context.status === "no_active_account") {
-    setEmptyState("no_active_account")
-  } else if (context.status === "account_not_found") {
-    setEmptyState("account_not_found")
-  } else {
-    setEmptyState("error")
-  }
+          if (context.status === "signed_out") {
+            setEmptyState("signed_out")
+          } else if (context.status === "missing_user_profile") {
+            setEmptyState("missing_user_profile")
+          } else if (context.status === "no_active_account") {
+            setEmptyState("no_active_account")
+          } else if (context.status === "account_not_found") {
+            setEmptyState("account_not_found")
+          } else {
+            setEmptyState("error")
+          }
 
-  setLoading(false)
-  return
-}
+          setLoading(false)
+          return
+        }
 
         setAccount(context.account)
         setTrades(context.trades)
@@ -105,54 +106,60 @@ export default function DashboardPage() {
     return () => unsub()
   }, [])
 
-  const pnl = useMemo(() => {
-    if (!account) return 0
-    return Number((account.balance - account.startBalance).toFixed(2))
-  }, [account])
+  const metrics = useMemo(() => {
+    return deriveTradingMetrics(account, trades)
+  }, [account, trades])
 
-  const drawdownUsed = useMemo(() => {
-    if (!account) return 0
-    return Math.max(0, account.startBalance - account.balance)
-  }, [account])
+  const recentTrades = useMemo(() => {
+    return [...trades]
+      .sort((a, b) => {
+        const aTime = a.closedAtMs ?? a.openedAtMs ?? a.createdAtMs ?? 0
+        const bTime = b.closedAtMs ?? b.openedAtMs ?? b.createdAtMs ?? 0
+        return bTime - aTime
+      })
+      .slice(0, 8)
+  }, [trades])
 
-  const drawdownLeft = useMemo(() => {
-    if (!account) return 0
-    return Number((account.maxLossLimit - drawdownUsed).toFixed(2))
-  }, [account, drawdownUsed])
+  const pnl = metrics.currentCycleProfit
+  const drawdownUsed = metrics.drawdownUsed
+  const drawdownLeft = metrics.drawdownRemaining
 
-  const profitTarget = 500
+  const profitTarget = Math.max((account?.startBalance ?? 0) * 0.1, 1)
 
   const targetProgress = useMemo(() => {
     return clamp((pnl / profitTarget) * 100, 0, 100)
-  }, [pnl])
+  }, [pnl, profitTarget])
 
-  const winRate = useMemo(() => {
-    if (trades.length === 0) return 0
-    const wins = trades.filter((trade) => trade.pnl > 0).length
-    return Math.round((wins / trades.length) * 100)
-  }, [trades])
+  const winRate = Math.round(metrics.winRate)
 
   const equitySeries = useMemo(() => {
     if (!account) return []
 
-    const recent = [...trades].reverse()
+    const closedTrades = [...trades]
+      .filter((trade) => trade.status === "closed")
+      .sort((a, b) => {
+        const aTime = a.closedAtMs ?? a.openedAtMs ?? a.createdAtMs ?? 0
+        const bTime = b.closedAtMs ?? b.openedAtMs ?? b.createdAtMs ?? 0
+        return aTime - bTime
+      })
+
     let running = account.startBalance
 
     const points =
-      recent.length > 0
-        ? recent.map((trade) => {
+      closedTrades.length > 0
+        ? closedTrades.map((trade) => {
             running += trade.pnl
-            return running
+            return Number(running.toFixed(2))
           })
         : [
             account.startBalance,
-            account.startBalance + pnl * 0.25,
-            account.startBalance + pnl * 0.5,
-            account.startBalance + pnl * 0.75,
-            account.balance,
+            Number((account.startBalance + pnl * 0.25).toFixed(2)),
+            Number((account.startBalance + pnl * 0.5).toFixed(2)),
+            Number((account.startBalance + pnl * 0.75).toFixed(2)),
+            Number(account.balance.toFixed(2)),
           ]
 
-    return points.map((value) => Number(value.toFixed(2)))
+    return points
   }, [account, trades, pnl])
 
   const chartPath = useMemo(() => {
@@ -179,15 +186,16 @@ export default function DashboardPage() {
   const accountStatus = useMemo(() => {
     if (!account) return "No Account"
     if (account.breached) return "Breached"
-    if (pnl >= profitTarget) return "Target Hit"
+    if (targetProgress >= 100 && !account.breached) return "Target Hit"
     return getAccountDisplayStatus(account)
-  }, [account, pnl])
+  }, [account, targetProgress])
 
-  const statusTone = account?.breached
-    ? "text-red-400"
-    : pnl >= profitTarget
-      ? "text-emerald-400"
-      : "text-cyan-300"
+  const statusTone =
+    account?.breached || accountStatus === "Breached" || accountStatus === "Locked"
+      ? "text-red-400"
+      : targetProgress >= 100 || accountStatus === "Passed" || accountStatus === "Funded"
+        ? "text-emerald-400"
+        : "text-cyan-300"
 
   const freshActivated = isFreshActivatedAccount(account, trades)
   const tradingLocked = isTradingLocked(account)
@@ -300,7 +308,7 @@ export default function DashboardPage() {
         <Stat title="Equity" value={formatMoney(account.equity)} />
         <Stat
           title="Net PnL"
-          value={`${pnl >= 0 ? "+" : ""}${formatMoney(pnl)}`}
+          value={`${pnl >= 0 ? "+" : ""}${formatMoney(Math.abs(pnl)).replace("$", "$")}`}
           positive={pnl >= 0}
         />
         <Stat
@@ -312,8 +320,8 @@ export default function DashboardPage() {
       </div>
 
       <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Stat title="Closed Trades" value={account.closedTrades} />
-        <Stat title="Trading Days" value={account.tradingDays} />
+        <Stat title="Closed Trades" value={metrics.closedTrades.length} />
+        <Stat title="Trading Days" value={metrics.tradingDays} />
         <Stat title="Max Loss Limit" value={formatMoney(account.maxLossLimit)} />
         <Stat title="Daily Loss Limit" value={formatMoney(account.dailyLossLimit)} />
       </div>
@@ -394,7 +402,7 @@ export default function DashboardPage() {
             <h2 className="mt-1 text-lg font-semibold">Latest Activity</h2>
           </div>
           <div className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-white/60">
-            {trades.length} loaded
+            {recentTrades.length} loaded
           </div>
         </div>
 
@@ -404,32 +412,34 @@ export default function DashboardPage() {
               <tr className="border-b border-white/10">
                 <th className="px-3 py-3 font-medium">Symbol</th>
                 <th className="px-3 py-3 font-medium">Side</th>
+                <th className="px-3 py-3 font-medium">Status</th>
                 <th className="px-3 py-3 font-medium">PnL</th>
                 <th className="px-3 py-3 font-medium">Time</th>
               </tr>
             </thead>
             <tbody>
-              {trades.length === 0 ? (
+              {recentTrades.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-3 py-8 text-center text-white/40">
+                  <td colSpan={5} className="px-3 py-8 text-center text-white/40">
                     No recent trades found yet.
                   </td>
                 </tr>
               ) : (
-                trades.map((trade) => (
+                recentTrades.map((trade) => (
                   <tr key={trade.id} className="border-b border-white/5">
                     <td className="px-3 py-3 font-medium">{trade.symbol}</td>
                     <td className="px-3 py-3 uppercase">{trade.side}</td>
+                    <td className="px-3 py-3 text-white/55">{trade.status}</td>
                     <td
                       className={`px-3 py-3 font-medium ${
                         trade.pnl >= 0 ? "text-emerald-400" : "text-red-400"
                       }`}
                     >
-                      {trade.pnl >= 0 ? "+" : ""}
-                      {formatMoney(trade.pnl)}
+                      {trade.pnl >= 0 ? "+" : "-"}
+                      {formatMoney(Math.abs(trade.pnl))}
                     </td>
                     <td className="px-3 py-3 text-white/55">
-                      {formatTime(trade.createdAtMs)}
+                      {formatTime(trade.closedAtMs ?? trade.openedAtMs ?? trade.createdAtMs)}
                     </td>
                   </tr>
                 ))

@@ -43,9 +43,18 @@ function formatDateTime(value?: number | null) {
 }
 
 function getTradeStatusTone(status: TradeRecord["status"]) {
-  if (status === "closed") return "text-emerald-400 border-emerald-500/20 bg-emerald-500/10"
-  if (status === "open") return "text-blue-400 border-blue-500/20 bg-blue-500/10"
-  if (status === "pending") return "text-amber-400 border-amber-500/20 bg-amber-500/10"
+  if (status === "closed") {
+    return "text-emerald-400 border-emerald-500/20 bg-emerald-500/10"
+  }
+
+  if (status === "open") {
+    return "text-blue-400 border-blue-500/20 bg-blue-500/10"
+  }
+
+  if (status === "pending") {
+    return "text-amber-400 border-amber-500/20 bg-amber-500/10"
+  }
+
   return "text-white/70 border-white/10 bg-white/5"
 }
 
@@ -84,7 +93,7 @@ export default function AnalyticsPage() {
       try {
         const context = await loadTradingContext(user.uid, {
           includeTrades: true,
-          tradeLimit: 200,
+          tradeLimit: 500,
         })
 
         setContextStatus(context.status)
@@ -101,7 +110,9 @@ export default function AnalyticsPage() {
     return () => unsubscribe()
   }, [])
 
-  const metrics = useMemo(() => deriveTradingMetrics(account, trades), [account, trades])
+  const metrics = useMemo(() => {
+    return deriveTradingMetrics(account, trades)
+  }, [account, trades])
 
   const recentTrades = useMemo(() => {
     return [...trades]
@@ -110,10 +121,11 @@ export default function AnalyticsPage() {
         const bTime = b.closedAtMs ?? b.openedAtMs ?? b.createdAtMs ?? 0
         return bTime - aTime
       })
-      .slice(0, 8)
+      .slice(0, 10)
   }, [trades])
 
   const accountStatus = getAccountDisplayStatus(account)
+
   const accountStatusTone =
     accountStatus === "Breached" || accountStatus === "Locked"
       ? "text-red-400 border-red-500/20 bg-red-500/10"
@@ -222,8 +234,8 @@ export default function AnalyticsPage() {
                 Real account performance, payout readiness, and trade metrics
               </h1>
               <p className="max-w-2xl text-sm leading-6 text-white/60 md:text-base">
-                This page now reads your live account and trade data from Firestore so analytics
-                match your actual NovaFunded activity instead of old hardcoded values.
+                This page reads your live account and trade data from Firestore so analytics match
+                your actual NovaFunded activity instead of old hardcoded values.
               </p>
             </div>
 
@@ -619,11 +631,7 @@ export default function AnalyticsPage() {
                     >
                       <td className="px-4 py-4 font-medium">{trade.symbol}</td>
                       <td className="px-4 py-4">
-                        <span
-                          className={
-                            trade.side === "buy" ? "text-emerald-400" : "text-red-400"
-                          }
-                        >
+                        <span className={trade.side === "buy" ? "text-emerald-400" : "text-red-400"}>
                           {trade.side.toUpperCase()}
                         </span>
                       </td>
